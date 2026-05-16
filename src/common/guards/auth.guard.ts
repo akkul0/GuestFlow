@@ -1,7 +1,7 @@
 import { FastifyRequest, FastifyReply } from 'fastify'
 
 export interface JwtPayload {
-  sub: string       // userId
+  sub: string
   hotelId: string
   role: string
   iat: number
@@ -14,23 +14,36 @@ declare module 'fastify' {
   }
 }
 
-export async function authenticate(request: FastifyRequest, reply: FastifyReply) {
+export async function authenticate(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   try {
     await request.jwtVerify()
     request.user = request.user as JwtPayload
-  } catch {
-    reply.status(401).send({ statusCode: 401, error: 'Unauthorized', message: 'Invalid or missing token' })
+  } catch (err) {
+    reply.status(401).send({
+      statusCode: 401,
+      error: 'Unauthorized',
+      message: 'Invalid or missing token',
+    })
   }
 }
 
 export function requireRole(...roles: string[]) {
-  return async (request: FastifyRequest, reply: FastifyReply) => {
-    await authenticate(request, reply)
-    if (!roles.includes(request.user.role)) {
-      return reply.status(403).send({
-        statusCode: 403,
-        error: 'Forbidden',
-        message: 'Insufficient permissions',
+  return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    try {
+      await request.jwtVerify()
+      const user = request.user as JwtPayload
+      if (!roles.includes(user.role)) {
+        reply.status(403).send({
+          statusCode: 403,
+          error: 'Forbidden',
+          message: 'Insufficient permissions',
+        })
+      }
+    } catch (err) {
+      reply.status(401).send({
+        statusCode: 401,
+        error: 'Unauthorized',
+        message: 'Invalid or missing token',
       })
     }
   }
