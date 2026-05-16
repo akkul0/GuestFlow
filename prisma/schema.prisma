@@ -1,0 +1,354 @@
+// GuestFlow Platform - Database Schema
+// PostgreSQL via Prisma ORM
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────
+// HOTELS & USERS
+// ─────────────────────────────────────────
+
+model Hotel {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  phone       String?
+  email       String?
+  address     String?
+  timezone    String   @default("Europe/Istanbul")
+  locale      String   @default("tr")
+  logoUrl     String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // WhatsApp Business API config
+  waPhoneNumberId   String?
+  waBusinessId      String?
+  waAccessToken     String?
+  waWebhookSecret   String?
+
+  // Claude AI config (per hotel override)
+  aiEnabled         Boolean @default(true)
+  aiModel           String  @default("gpt-4o")
+  aiSystemPrompt    String? @db.Text
+  autoTranslate     Boolean @default(true)
+
+  users         User[]
+  guests        Guest[]
+  conversations Conversation[]
+  messageTemplates MessageTemplate[]
+  rooms         Room[]
+  reports       DailyReport[]
+
+  @@map("hotels")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  hotelId      String
+  hotel        Hotel     @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  email        String
+  username     String
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         UserRole  @default(AGENT)
+  language     String    @default("tr")
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  refreshTokens RefreshToken[]
+  messages      Message[]       @relation("SentByUser")
+  assignedConvs Conversation[]  @relation("AssignedAgent")
+
+  @@unique([hotelId, email])
+  @@unique([hotelId, username])
+  @@map("users")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  HOTEL_ADMIN
+  MANAGER
+  AGENT
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+
+  @@map("refresh_tokens")
+}
+
+// ─────────────────────────────────────────
+// ROOMS
+// ─────────────────────────────────────────
+
+model Room {
+  id        String  @id @default(uuid())
+  hotelId   String
+  hotel     Hotel   @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  number    String
+  floor     Int?
+  type      String?
+  isActive  Boolean @default(true)
+
+  guests    Guest[]
+
+  @@unique([hotelId, number])
+  @@map("rooms")
+}
+
+// ─────────────────────────────────────────
+// GUESTS & CRM
+// ─────────────────────────────────────────
+
+model Guest {
+  id            String    @id @default(uuid())
+  hotelId       String
+  hotel         Hotel     @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  externalId    String?   // PMS/POS system ID
+  firstName     String
+  lastName      String
+  phone         String    // E.164 format: +905xxxxxxxxx
+  email         String?
+  nationality   String?   // ISO 3166-1 alpha-2
+  birthDate     DateTime?
+  language      String    @default("tr")
+  agencyName    String?
+  bookingSource String?   // BOOKING_COM, HOTELBEDS, DIRECT, etc.
+  isVip         Boolean   @default(false)
+  notes         String?   @db.Text
+
+  // Current stay info
+  roomId        String?
+  room          Room?     @relation(fields: [roomId], references: [id])
+  checkInDate   DateTime?
+  checkOutDate  DateTime?
+  reservationNo String?
+
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  conversations Conversation[]
+  companions    GuestCompanion[]
+
+  @@unique([hotelId, phone])
+  @@map("guests")
+}
+
+model GuestCompanion {
+  id        String   @id @default(uuid())
+  guestId   String
+  guest     Guest    @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  firstName String
+  lastName  String
+  birthDate DateTime?
+  createdAt DateTime @default(now())
+
+  @@map("guest_companions")
+}
+
+// ─────────────────────────────────────────
+// CONVERSATIONS & MESSAGES
+// ─────────────────────────────────────────
+
+model Conversation {
+  id          String             @id @default(uuid())
+  hotelId     String
+  hotel       Hotel              @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  guestId     String?
+  guest       Guest?             @relation(fields: [guestId], references: [id])
+  waContactId String             // WhatsApp contact phone
+  displayName String?
+  language    String             @default("tr")
+  status      ConversationStatus @default(OPEN)
+  assignedTo  String?
+  agent       User?              @relation("AssignedAgent", fields: [assignedTo], references: [id])
+  isAiEnabled Boolean            @default(true)
+  lastMessageAt DateTime?
+  unreadCount Int                @default(0)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  messages    Message[]
+  tags        ConversationTag[]
+
+  @@unique([hotelId, waContactId])
+  @@map("conversations")
+}
+
+enum ConversationStatus {
+  OPEN
+  PENDING
+  RESOLVED
+  ARCHIVED
+}
+
+model Message {
+  id             String        @id @default(uuid())
+  conversationId String
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  hotelId        String
+  waMessageId    String?       @unique // WhatsApp message ID
+  direction      MessageDirection
+  contentType    MessageContentType @default(TEXT)
+  body           String?       @db.Text
+  bodyOriginal   String?       @db.Text  // before translation
+  translatedFrom String?       // source language
+  mediaUrl       String?
+  mediaCaption   String?
+  templateName   String?
+  templateData   Json?
+  status         MessageStatus @default(SENT)
+  isAiGenerated  Boolean       @default(false)
+  isAutoSent     Boolean       @default(false)
+  sentById       String?
+  sentBy         User?         @relation("SentByUser", fields: [sentById], references: [id])
+  errorCode      String?
+  errorMessage   String?
+  sentAt         DateTime?
+  deliveredAt    DateTime?
+  readAt         DateTime?
+  createdAt      DateTime      @default(now())
+
+  @@map("messages")
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageContentType {
+  TEXT
+  IMAGE
+  DOCUMENT
+  AUDIO
+  VIDEO
+  TEMPLATE
+  INTERACTIVE
+  LOCATION
+  STICKER
+}
+
+enum MessageStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+model ConversationTag {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tag            String
+  createdAt      DateTime     @default(now())
+
+  @@unique([conversationId, tag])
+  @@map("conversation_tags")
+}
+
+// ─────────────────────────────────────────
+// MESSAGE TEMPLATES
+// ─────────────────────────────────────────
+
+model MessageTemplate {
+  id          String           @id @default(uuid())
+  hotelId     String
+  hotel       Hotel            @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  name        String           // internal name
+  waTemplateName String?       // approved WhatsApp template name
+  category    TemplateCategory
+  language    String           @default("tr")
+  body        String           @db.Text
+  headerText  String?
+  footerText  String?
+  buttons     Json?            // quick reply buttons config
+  variables   String[]         // list of variable names like ["guest_name", "room_no"]
+  isApproved  Boolean          @default(false)
+  isActive    Boolean          @default(true)
+  usageCount  Int              @default(0)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@unique([hotelId, name])
+  @@map("message_templates")
+}
+
+enum TemplateCategory {
+  WELCOME
+  HOUSEKEEPING
+  FB
+  TECHNICAL
+  SURVEY
+  OTEL_INFO
+  CHECKOUT
+  OTHER
+}
+
+// ─────────────────────────────────────────
+// REPORTS & ANALYTICS
+// ─────────────────────────────────────────
+
+model DailyReport {
+  id                  String   @id @default(uuid())
+  hotelId             String
+  hotel               Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  date                DateTime @db.Date
+  totalRooms          Int      @default(0)
+  checkinRooms        Int      @default(0)
+  reachedRooms        Int      @default(0)
+  unreachedRooms      Int      @default(0)
+  phoneRooms          Int      @default(0)
+  noPhoneRooms        Int      @default(0)
+  messagesSent        Int      @default(0)
+  messagesDelivered   Int      @default(0)
+  messagesFailed      Int      @default(0)
+  messagesReceived    Int      @default(0)
+  aiMessagesGenerated Int      @default(0)
+  avgResponseTimeMs   Int?
+  templateBreakdown   Json?    // { WELCOME: 52, HOUSEKEEPING: 41, ... }
+  failureReasons      Json?    // { "undeliverable": 21, ... }
+  createdAt           DateTime @default(now())
+
+  @@unique([hotelId, date])
+  @@map("daily_reports")
+}
+
+// ─────────────────────────────────────────
+// AUDIT LOG
+// ─────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  hotelId    String?
+  userId     String?
+  action     String
+  entity     String
+  entityId   String?
+  oldValue   Json?
+  newValue   Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@map("audit_logs")
+}
