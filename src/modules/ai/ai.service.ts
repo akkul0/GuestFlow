@@ -11,7 +11,6 @@ type ConversationWithContext = Conversation & {
 const DEFAULT_MODEL = 'claude-sonnet-4-5'
 const FAST_MODEL = 'claude-haiku-4-5-20251001'
 
-// The X Belek coordinates
 const HOTEL_LAT = 36.8579
 const HOTEL_LON = 31.0576
 
@@ -30,17 +29,13 @@ export class AiService {
       const res = await fetch(
         `https://api.openweathermap.org/data/2.5/weather?lat=${HOTEL_LAT}&lon=${HOTEL_LON}&appid=${apiKey}&units=metric&lang=tr`
       )
-      const data = await res.json() as {
-        main: { temp: number; feels_like: number; humidity: number }
-        weather: { description: string }[]
-        wind: { speed: number }
-      }
+      const data = await res.json() as any
 
       const temp = Math.round(data.main.temp)
       const feelsLike = Math.round(data.main.feels_like)
       const desc = data.weather[0]?.description ?? ''
       const humidity = data.main.humidity
-      const wind = Math.round(data.wind.speed * 3.6) // m/s → km/h
+      const wind = Math.round(data.wind.speed * 3.6)
 
       return `\nŞu anki hava durumu (Belek): ${temp}°C (hissedilen ${feelsLike}°C), ${desc}, nem %${humidity}, rüzgar ${wind} km/h`
     } catch {
@@ -62,37 +57,79 @@ export class AiService {
     return now.toLocaleDateString('tr-TR', options)
   }
 
+  private async fetchImageAsBase64(url: string, twilioAuth: string): Promise<{ data: string; mediaType: string } | null> {
+    try {
+      const headers: Record<string, string> = {}
+      if (url.includes('twilio.com') && twilioAuth) {
+        headers['Authorization'] = `Basic ${Buffer.from(twilioAuth).toString('base64')}`
+      }
+
+      const res = await fetch(url, { headers })
+      if (!res.ok) return null
+
+      const contentType = res.headers.get('content-type') ?? 'image/jpeg'
+      const buffer = await res.arrayBuffer()
+      const base64 = Buffer.from(buffer).toString('base64')
+
+      return { data: base64, mediaType: contentType.split(';')[0] }
+    } catch {
+      return null
+    }
+  }
+
   async generateReply(conversation: ConversationWithContext): Promise<string | null> {
     const { hotel, guest, messages } = conversation
 
     const lastMessage = messages[0]
     if (!lastMessage || lastMessage.direction === 'OUTBOUND') return null
 
-    // Saat ve hava durumu bilgisi al
     const currentTime = this.getCurrentTime()
     const weather = await this.getWeather()
-
     const systemPrompt = this.buildSystemPrompt(hotel, guest, currentTime, weather)
 
-    const allMessages = messages
-      .slice(0, 10)
-      .reverse()
-      .map((m) => ({
-        role: m.direction === 'INBOUND' ? ('user' as const) : ('assistant' as const),
-        content: m.body ?? '',
-      }))
-      .filter((m) => m.content.length > 0)
+    const allMessages = messages.slice(0, 10).reverse()
+    const chatHistory: Anthropic.MessageParam[] = []
 
-    const firstUserIdx = allMessages.findIndex((m) => m.role === 'user')
+    for (const m of allMessages) {
+      const role = m.direction === 'INBOUND' ? ('user' as const) : ('assistant' as const)
+      const text = m.body ?? ''
+
+      // Son mesaj ve görsel varsa image olarak gönder
+      if (m.id === lastMessage.id && (m as any).mediaUrl && m.direction === 'INBOUND') {
+        const twilioAuth = hotel.waAccessToken ?? ''
+        const imageData = await this.fetchImageAsBase64((m as any).mediaUrl, twilioAuth)
+
+        if (imageData && imageData.mediaType.startsWith('image/')) {
+          const content: Anthropic.ContentBlockParam[] = [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: imageData.mediaType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+                data: imageData.data,
+              },
+            },
+            { type: 'text', text: text || 'Bu görsele bakarak yardımcı olabilir misin?' },
+          ]
+          chatHistory.push({ role, content })
+          continue
+        }
+      }
+
+      if (text) chatHistory.push({ role, content: text })
+    }
+
+    if (chatHistory.length === 0) return null
+    const firstUserIdx = chatHistory.findIndex((m) => m.role === 'user')
     if (firstUserIdx === -1) return null
-    const chatHistory = allMessages.slice(firstUserIdx)
+    const finalHistory = chatHistory.slice(firstUserIdx)
 
     try {
       const res = await this.client.messages.create({
         model: hotel.aiModel ?? process.env.ANTHROPIC_MODEL ?? DEFAULT_MODEL,
         max_tokens: parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? '500'),
         system: systemPrompt,
-        messages: chatHistory,
+        messages: finalHistory,
       })
 
       const block = res.content[0]
@@ -133,11 +170,7 @@ export class AiService {
     }
   }
 
-  async categorizeRequest(text: string): Promise<{
-    category: string
-    urgency: 'low' | 'medium' | 'high'
-    department: string
-  }> {
+  async categorizeRequest(text: string): Promise<{ category: string; urgency: 'low' | 'medium' | 'high'; department: string }> {
     try {
       const res = await this.client.messages.create({
         model: FAST_MODEL,
@@ -158,16 +191,17 @@ Return ONLY valid JSON (no markdown, no explanation) with these exact keys:
   }
 
   private buildSystemPrompt(hotel: Hotel, guest: Guest | null, currentTime: string, weather: string): string {
-    const basePrompt = hotel.aiSystemPrompt ??
+    const basePrompt = (hotel as any).aiSystemPrompt ??
       `You are a helpful hotel concierge assistant for ${hotel.name}, powered by GuestFlow.
 Always be polite, professional, and concise. Keep responses under 3 sentences when possible.
-If the guest needs something physical (room service, maintenance, extra items), acknowledge the request and confirm it has been forwarded to the relevant department.`
+If the guest needs something physical (room service, maintenance, extra items), acknowledge the request and confirm it has been forwarded to the relevant department.
+If the guest sends an image, analyze it and respond appropriately (e.g., if it shows a broken item, acknowledge the maintenance request).`
 
     const timeContext = `\n\nANLIK BİLGİLER:\n- Tarih/Saat: ${currentTime}${weather}`
 
     if (!guest) return basePrompt + timeContext
 
-    const guestContext = `\n\nMisafir bilgileri:\n- Ad: ${guest.firstName} ${guest.lastName}\n- Oda: ${guest.roomId ?? 'Atanmamış'}\n- Check-in: ${guest.checkInDate?.toLocaleDateString('tr-TR') ?? 'Bilinmiyor'}\n- Check-out: ${guest.checkOutDate?.toLocaleDateString('tr-TR') ?? 'Bilinmiyor'}\n- Uyruk: ${guest.nationality ?? 'Bilinmiyor'}\n- Dil: ${guest.language}${guest.isVip ? '\n- VIP Misafir: Öncelikli ilgi göster.' : ''}\n\nMisafirin diline göre yanıt ver (${guest.language}).`
+    const guestContext = `\n\nMisafir bilgileri:\n- Ad: ${guest.firstName} ${guest.lastName}\n- Oda: ${(guest as any).roomId ?? 'Atanmamış'}\n- Check-in: ${guest.checkInDate?.toLocaleDateString('tr-TR') ?? 'Bilinmiyor'}\n- Check-out: ${guest.checkOutDate?.toLocaleDateString('tr-TR') ?? 'Bilinmiyor'}\n- Uyruk: ${guest.nationality ?? 'Bilinmiyor'}\n- Dil: ${guest.language}${(guest as any).isVip ? '\n- VIP Misafir: Öncelikli ilgi göster.' : ''}\n\nMisafirin diline göre yanıt ver (${guest.language}).`
 
     return basePrompt + timeContext + guestContext
   }
