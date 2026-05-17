@@ -261,6 +261,7 @@ export class ChatService {
     body: string
     contentType: string
     mediaUrl?: string
+    mediaContentType?: string
     displayName?: string
   }) {
     // Find or create conversation
