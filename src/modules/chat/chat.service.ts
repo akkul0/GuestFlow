@@ -15,7 +15,8 @@ export class ChatService {
   }
 
   async listConversations(hotelId: string, query: ListConversationsQuery) {
-    const { status, search, assignedTo, cursor, limit = 30, unreadOnly } = query
+    const { status, search, assignedTo, cursor, unreadOnly } = query
+    const limit = parseInt(String(query.limit ?? 30))
 
     const where: Record<string, unknown> = { hotelId }
     if (status) where.status = status
