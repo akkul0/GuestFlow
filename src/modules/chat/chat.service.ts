@@ -367,26 +367,44 @@ export class ChatService {
   private async checkAndNotifyOrderTaker(conversation: any, latestMessage: string) {
     const messages = conversation.messages ?? []
 
-    // Son mesaj oda numarası mı?
+    // Oda numarası bul - önce konuşma geçmişinden, sonra son mesajdan
+    let roomNo: string | null = null
+    let requestMessage = latestMessage
+    let mediaUrl: string | undefined
+
+    // Son mesajda oda numarası var mı?
     const roomFromLastMsg = this.extractRoomNumber(latestMessage)
 
-    if (roomFromLastMsg && messages.length >= 2) {
-      // Önceki mesajlarda talep var mı bak
-      const prevInbound = messages.slice(1).find((m: any) => m.direction === 'INBOUND')
-      if (prevInbound && this.isServiceRequest(prevInbound.body ?? '')) {
-        await this.notifyOrderTaker(conversation, prevInbound.body, roomFromLastMsg)
-        return
-      }
+    // Konuşma geçmişinde oda numarası ara
+    for (const m of messages) {
+      const r = this.extractRoomNumber(m.body ?? '')
+      if (r) { roomNo = r; break }
+    }
+    if (!roomNo && roomFromLastMsg) roomNo = roomFromLastMsg
+
+    // Talep mesajını bul
+    if (this.isServiceRequest(latestMessage)) {
+      requestMessage = latestMessage
+    } else {
+      // Önceki inbound mesajlarda talep ara
+      const prevReq = messages.slice(1).find((m: any) =>
+        m.direction === 'INBOUND' && this.isServiceRequest(m.body ?? '')
+      )
+      if (prevReq) requestMessage = prevReq.body ?? latestMessage
     }
 
-    // Mesajın içinde hem talep hem oda numarası var mı?
-    if (this.isServiceRequest(latestMessage) && roomFromLastMsg) {
-      await this.notifyOrderTaker(conversation, latestMessage, roomFromLastMsg)
-      return
-    }
+    // Medya URL'si var mı?
+    const lastMsgWithMedia = messages.find((m: any) => m.direction === 'INBOUND' && m.mediaUrl)
+    if (lastMsgWithMedia) mediaUrl = lastMsgWithMedia.mediaUrl
+
+    // Talep değilse ve oda numarası yoksa bildirim gönderme
+    if (!this.isServiceRequest(requestMessage) && !mediaUrl) return
+    if (!roomNo) return
+
+    await this.notifyOrderTaker(conversation, requestMessage, roomNo, mediaUrl)
   }
 
-  private async notifyOrderTaker(conversation: any, guestMessage: string, roomNo?: string) {
+  private async notifyOrderTaker(conversation: any, guestMessage: string, roomNo?: string, mediaUrl?: string) {
     try {
       const ORDER_TAKER_PHONE = process.env.ORDER_TAKER_PHONE ?? '+905319505440'
       const { hotel, guest } = conversation
@@ -425,6 +443,10 @@ export class ChatService {
         To: `whatsapp:${ORDER_TAKER_PHONE}`,
         Body: msg,
       })
+
+      if (mediaUrl) {
+        formData.set('MediaUrl0', mediaUrl)
+      }
 
       const res = await fetch(
         `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
