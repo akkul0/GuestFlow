@@ -331,10 +331,80 @@ export class ChatService {
         if (aiReply) {
           await this.sendAutoAiReply(fullConversation, aiReply)
         }
+
+        // Order Taker'a bildirim
+        if (data.body && data.body.trim().length > 2) {
+          this.notifyOrderTaker(fullConversation, data.body).catch((err) => {
+            this.app.log.error({ err }, 'Order taker notification failed')
+          })
+        }
       }
     }
 
     return { conversationId: conversation.id, messageId: message.id }
+  }
+
+  private async notifyOrderTaker(conversation: any, guestMessage: string) {
+    try {
+      const ORDER_TAKER_PHONE = process.env.ORDER_TAKER_PHONE ?? '+905319505440'
+      const { hotel, guest } = conversation
+
+      const waAccessToken = hotel.waAccessToken ?? ''
+      if (!waAccessToken) return
+      const [accountSid, authToken] = waAccessToken.split(':')
+      if (!accountSid || !authToken) return
+
+      const guestName = guest ? `${guest.firstName} ${guest.lastName}` : 'Bilinmiyor'
+      const roomNo = guest?.room?.number ?? guest?.roomId ?? 'Bilinmiyor'
+
+      const category = await this.aiService.categorizeRequest(guestMessage)
+
+      const categoryEmoji: Record<string, string> = {
+        TECHNICAL: '🔧', HOUSEKEEPING: '🧹', FB: '🍽️', ROOM_SERVICE: '🛎️',
+        COMPLAINT: '⚠️', INFORMATION: 'ℹ️', CHECKOUT: '🚪', OTHER: '📋',
+      }
+      const emoji = categoryEmoji[category.category] ?? '📋'
+      const urgencyText = category.urgency === 'high' ? '🔴 ACİL' : category.urgency === 'medium' ? '🟡 Normal' : '🟢 Düşük'
+      const time = new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Istanbul' })
+
+      const msg = `${emoji} YENİ MİSAFİR TALEBİ\n\n` +
+        `🏨 Otel: ${hotel.name}\n` +
+        `🛏️ Oda: ${roomNo}\n` +
+        `👤 Misafir: ${guestName}\n` +
+        `💬 Talep: ${guestMessage}\n` +
+        `📂 Departman: ${category.department}\n` +
+        `${urgencyText}\n` +
+        `⏰ Saat: ${time}`
+
+      const fromNumber = hotel.waPhoneNumberId?.replace('whatsapp:', '') ?? '+14155238886'
+
+      const formData = new URLSearchParams({
+        From: `whatsapp:${fromNumber}`,
+        To: `whatsapp:${ORDER_TAKER_PHONE}`,
+        Body: msg,
+      })
+
+      const res = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}`,
+          },
+          body: formData,
+        }
+      )
+
+      if (res.ok) {
+        this.app.log.info({ roomNo, guestName, category: category.category }, 'Order taker notified')
+      } else {
+        const err = await res.text()
+        this.app.log.error({ err }, 'Order taker WhatsApp failed')
+      }
+    } catch (err) {
+      this.app.log.error({ err }, 'notifyOrderTaker error')
+    }
   }
 
   private async sendAutoAiReply(conversation: Parameters<AiService['generateReply']>[0], text: string) {
