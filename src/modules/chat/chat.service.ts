@@ -332,9 +332,9 @@ export class ChatService {
           await this.sendAutoAiReply(fullConversation, aiReply)
         }
 
-        // Order Taker'a bildirim
-        if (data.body && data.body.trim().length > 2) {
-          this.notifyOrderTaker(fullConversation, data.body).catch((err) => {
+        // Order Taker'a bildirim - sadece oda numarası alındıktan sonra
+        if (data.body && data.body.trim().length > 0) {
+          await this.checkAndNotifyOrderTaker(fullConversation, data.body).catch((err) => {
             this.app.log.error({ err }, 'Order taker notification failed')
           })
         }
@@ -344,7 +344,45 @@ export class ChatService {
     return { conversationId: conversation.id, messageId: message.id }
   }
 
-  private async notifyOrderTaker(conversation: any, guestMessage: string) {
+  private extractRoomNumber(text: string): string | null {
+    // Oda numarası pattern: 3-4 haneli sayı
+    const match = text.match(/\b(\d{3,4})\b/)
+    return match ? match[1] : null
+  }
+
+  private async checkAndNotifyOrderTaker(conversation: any, latestMessage: string) {
+    const messages = conversation.messages ?? []
+    if (messages.length < 2) return // En az 2 mesaj lazım (talep + oda no)
+
+    // Son mesaj oda numarası mı?
+    const roomFromLastMsg = this.extractRoomNumber(latestMessage)
+    if (!roomFromLastMsg) return // Sayı yoksa oda no vermemiş
+
+    // Bir önceki AI mesajında "oda numaranız" geçiyor mu?
+    const prevMessages = messages.slice(1) // en son mesajdan sonraki
+    const aiAskedRoom = prevMessages.some((m: any) =>
+      m.direction === 'OUTBOUND' &&
+      m.body &&
+      (m.body.includes('oda numara') || m.body.includes('oda no') || m.body.includes('room number'))
+    )
+
+    if (!aiAskedRoom) return // AI oda numarası sormamışsa bildirim gönderme
+
+    // Talep mesajını bul (AI'nın oda sorduğu mesajdan önceki inbound mesaj)
+    let requestMessage = ''
+    for (let i = 1; i < messages.length; i++) {
+      if (messages[i].direction === 'INBOUND') {
+        requestMessage = messages[i].body ?? ''
+        break
+      }
+    }
+
+    if (!requestMessage) return
+
+    await this.notifyOrderTaker(conversation, requestMessage, roomFromLastMsg)
+  }
+
+  private async notifyOrderTaker(conversation: any, guestMessage: string, roomNo?: string) {
     try {
       const ORDER_TAKER_PHONE = process.env.ORDER_TAKER_PHONE ?? '+905319505440'
       const { hotel, guest } = conversation
@@ -355,7 +393,7 @@ export class ChatService {
       if (!accountSid || !authToken) return
 
       const guestName = guest ? `${guest.firstName} ${guest.lastName}` : 'Bilinmiyor'
-      const roomNo = guest?.room?.number ?? guest?.roomId ?? 'Bilinmiyor'
+      const roomNo = roomNo ?? guest?.room?.number ?? guest?.roomId ?? 'Bilinmiyor'
 
       const category = await this.aiService.categorizeRequest(guestMessage)
 
