@@ -397,7 +397,7 @@ export class ChatService {
       if (!accountSid || !authToken) return
 
       const guestName = guest ? `${guest.firstName} ${guest.lastName}` : 'Bilinmiyor'
-      const roomNo = roomNo ?? guest?.room?.number ?? guest?.roomId ?? 'Bilinmiyor'
+      const resolvedRoom = roomNo ?? guest?.room?.number ?? guest?.roomId ?? 'Bilinmiyor'
 
       const category = await this.aiService.categorizeRequest(guestMessage)
 
@@ -411,7 +411,7 @@ export class ChatService {
 
       const msg = `${emoji} YENİ MİSAFİR TALEBİ\n\n` +
         `🏨 Otel: ${hotel.name}\n` +
-        `🛏️ Oda: ${roomNo}\n` +
+        `🛏️ Oda: ${resolvedRoom}\n` +
         `👤 Misafir: ${guestName}\n` +
         `💬 Talep: ${guestMessage}\n` +
         `📂 Departman: ${category.department}\n` +
@@ -439,7 +439,7 @@ export class ChatService {
       )
 
       if (res.ok) {
-        this.app.log.info({ roomNo, guestName, category: category.category }, 'Order taker notified')
+        this.app.log.info({ resolvedRoom, guestName, category: category.category }, 'Order taker notified')
       } else {
         const err = await res.text()
         this.app.log.error({ err }, 'Order taker WhatsApp failed')
