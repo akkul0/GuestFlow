@@ -14,6 +14,25 @@ const FAST_MODEL = 'claude-haiku-4-5-20251001'
 const HOTEL_LAT = 36.8579
 const HOTEL_LON = 31.0576
 
+const PLACE_KEYWORDS: { keywords: string[]; type: string; label: string }[] = [
+  { keywords: ['eczane', 'pharmacy', 'apteka', 'apotheke'], type: 'pharmacy', label: 'Eczane' },
+  { keywords: ['market', 'süpermarket', 'supermarket', 'супермаркет', 'магазин'], type: 'supermarket', label: 'Market' },
+  { keywords: ['restoran', 'restaurant', 'yemek', 'nerede yesem', 'nerede yiyebilirim', 'ресторан'], type: 'restaurant', label: 'Restoran' },
+  { keywords: ['atm', 'banka', 'bank', 'банкомат'], type: 'atm', label: 'ATM/Banka' },
+  { keywords: ['hastane', 'doktor', 'hospital', 'больница'], type: 'hospital', label: 'Hastane' },
+  { keywords: ['kafe', 'kahve', 'cafe', 'coffee', 'кафе'], type: 'cafe', label: 'Kafe' },
+]
+
+function detectPlaceSearch(text: string): { type: string; label: string } | null {
+  const lower = text.toLowerCase()
+  for (const entry of PLACE_KEYWORDS) {
+    if (entry.keywords.some(k => lower.includes(k))) {
+      return { type: entry.type, label: entry.label }
+    }
+  }
+  return null
+}
+
 export class AiService {
   private client: Anthropic
 
@@ -41,6 +60,40 @@ export class AiService {
     } catch {
       return ''
     }
+  }
+
+  private async getNearbyPlaces(type: string, label: string): Promise<string> {
+    try {
+      const apiKey = process.env.GOOGLE_PLACES_API_KEY
+      if (!apiKey) return ''
+
+      const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${HOTEL_LAT},${HOTEL_LON}&rankby=distance&type=${type}&key=${apiKey}&language=tr`
+      const res = await fetch(url)
+      const data = await res.json() as any
+
+      if (!data.results || data.results.length === 0) return ''
+
+      const places = data.results.slice(0, 3).map((p: any) => {
+        const dist = p.geometry?.location
+          ? Math.round(this.calcDistance(HOTEL_LAT, HOTEL_LON, p.geometry.location.lat, p.geometry.location.lng) * 10) / 10
+          : '?'
+        const rating = p.rating ? ` ⭐${p.rating}` : ''
+        const open = p.opening_hours?.open_now === true ? ' 🟢 Açık' : p.opening_hours?.open_now === false ? ' 🔴 Kapalı' : ''
+        return `📍 ${p.name}${rating}${open} - ${dist} km`
+      }).join('\n')
+
+      return `\n\nYakındaki ${label} seçenekleri:\n${places}`
+    } catch {
+      return ''
+    }
+  }
+
+  private calcDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371
+    const dLat = (lat2 - lat1) * Math.PI / 180
+    const dLon = (lon2 - lon1) * Math.PI / 180
+    const a = Math.sin(dLat/2) ** 2 + Math.cos(lat1 * Math.PI/180) * Math.cos(lat2 * Math.PI/180) * Math.sin(dLon/2) ** 2
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
   }
 
   private getCurrentTime(): string {
@@ -85,7 +138,16 @@ export class AiService {
 
     const currentTime = this.getCurrentTime()
     const weather = await this.getWeather()
-    const systemPrompt = this.buildSystemPrompt(hotel, guest, currentTime, weather)
+
+    // Konum bazlı arama
+    let places = ''
+    const lastText = lastMessage.body ?? ''
+    const placeSearch = detectPlaceSearch(lastText)
+    if (placeSearch) {
+      places = await this.getNearbyPlaces(placeSearch.type, placeSearch.label)
+    }
+
+    const systemPrompt = this.buildSystemPrompt(hotel, guest, currentTime, weather, places)
 
     const allMessages = messages.slice(0, 10).reverse()
     const chatHistory: Anthropic.MessageParam[] = []
@@ -190,14 +252,14 @@ Return ONLY valid JSON (no markdown, no explanation) with these exact keys:
     }
   }
 
-  private buildSystemPrompt(hotel: Hotel, guest: Guest | null, currentTime: string, weather: string): string {
+  private buildSystemPrompt(hotel: Hotel, guest: Guest | null, currentTime: string, weather: string, places = ''): string {
     const basePrompt = (hotel as any).aiSystemPrompt ??
       `You are a helpful hotel concierge assistant for ${hotel.name}, powered by GuestFlow.
 Always be polite, professional, and concise. Keep responses under 3 sentences when possible.
 If the guest needs something physical (room service, maintenance, extra items), acknowledge the request and confirm it has been forwarded to the relevant department.
 If the guest sends an image, analyze it and respond appropriately (e.g., if it shows a broken item, acknowledge the maintenance request).`
 
-    const timeContext = `\n\nANLIK BİLGİLER:\n- Tarih/Saat: ${currentTime}${weather}`
+    const timeContext = `\n\nANLIK BİLGİLER:\n- Tarih/Saat: ${currentTime}${weather}${places}`
 
     if (!guest) return basePrompt + timeContext
 
