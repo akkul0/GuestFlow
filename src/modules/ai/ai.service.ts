@@ -33,6 +33,27 @@ function detectPlaceSearch(text: string): { type: string; label: string } | null
   return null
 }
 
+function detectDirectionRequest(text: string): string | null {
+  const lower = text.toLowerCase()
+  const patterns = [
+    /nasıl giderim[^?]*?([a-zçğıöşü\s]+(?:eczane|market|restoran|kafe|otel|plaj|hastane|banka|atm))/i,
+    /([a-zçğıöşü\s']+(?:eczane|market|restoran|kafe|otel|plaj|hastane|banka|atm))[a-z\s]*nasıl giderim/i,
+    /([a-zçğıöşü\s']+(?:eczane|market|restoran|kafe|otel|plaj|hastane|banka|atm))[a-z\s]*yol tarifi/i,
+    /how (?:do i get|to get) to ([a-z\s]+)/i,
+    /directions? to ([a-z\s]+)/i,
+    /как добраться до ([а-яё\s]+)/i,
+  ]
+  for (const pattern of patterns) {
+    const match = text.match(pattern)
+    if (match) return match[1]?.trim() ?? null
+  }
+  // Genel yol tarifi isteği
+  if (lower.includes('nasıl giderim') || lower.includes('yol tarifi') || lower.includes('directions to') || lower.includes('how to get to')) {
+    return text
+  }
+  return null
+}
+
 export class AiService {
   private client: Anthropic
 
@@ -83,6 +104,47 @@ export class AiService {
       }).join('\n')
 
       return `\n\nYakındaki ${label} seçenekleri:\n${places}`
+    } catch {
+      return ''
+    }
+  }
+
+  private async getDirections(destination: string): Promise<string> {
+    try {
+      const apiKey = process.env.GOOGLE_PLACES_API_KEY
+      if (!apiKey) return ''
+
+      // Önce hedefin koordinatlarını bul
+      const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(destination + ' Belek Antalya Turkey')}&key=${apiKey}&language=tr`
+      const geocodeRes = await fetch(geocodeUrl)
+      const geocodeData = await geocodeRes.json() as any
+
+      if (!geocodeData.results?.length) return ''
+
+      const destLat = geocodeData.results[0].geometry.location.lat
+      const destLng = geocodeData.results[0].geometry.location.lng
+      const destName = geocodeData.results[0].formatted_address
+
+      // Directions API
+      const dirUrl = `https://maps.googleapis.com/maps/api/directions/json?origin=${HOTEL_LAT},${HOTEL_LON}&destination=${destLat},${destLng}&mode=walking&key=${apiKey}&language=tr`
+      const dirRes = await fetch(dirUrl)
+      const dirData = await dirRes.json() as any
+
+      if (!dirData.routes?.length) return ''
+
+      const route = dirData.routes[0].legs[0]
+      const duration = route.duration.text
+      const distance = route.distance.text
+
+      // İlk 3 adımı al
+      const steps = route.steps.slice(0, 5).map((s: any, i: number) => {
+        const instruction = s.html_instructions.replace(/<[^>]+>/g, '')
+        return `${i + 1}. ${instruction} (${s.distance.text})`
+      }).join('\n')
+
+      const mapsLink = `https://www.google.com/maps/dir/${HOTEL_LAT},${HOTEL_LON}/${destLat},${destLng}`
+
+      return `\n\n🗺️ **${destination} Yol Tarifi:**\n🚶 Yürüyerek: ${duration} (${distance})\n\n📍 Adımlar:\n${steps}\n\n🔗 Google Maps: ${mapsLink}`
     } catch {
       return ''
     }
@@ -142,9 +204,14 @@ export class AiService {
     // Konum bazlı arama
     let places = ''
     const lastText = lastMessage.body ?? ''
-    const placeSearch = detectPlaceSearch(lastText)
-    if (placeSearch) {
-      places = await this.getNearbyPlaces(placeSearch.type, placeSearch.label)
+    const directionRequest = detectDirectionRequest(lastText)
+    if (directionRequest) {
+      places = await this.getDirections(directionRequest)
+    } else {
+      const placeSearch = detectPlaceSearch(lastText)
+      if (placeSearch) {
+        places = await this.getNearbyPlaces(placeSearch.type, placeSearch.label)
+      }
     }
 
     const systemPrompt = this.buildSystemPrompt(hotel, guest, currentTime, weather, places)
@@ -259,7 +326,7 @@ Always be polite, professional, and concise. Keep responses under 3 sentences wh
 If the guest needs something physical (room service, maintenance, extra items), acknowledge the request and confirm it has been forwarded to the relevant department.
 If the guest sends an image, analyze it and respond appropriately (e.g., if it shows a broken item, acknowledge the maintenance request).`
 
-    const timeContext = `\n\nANLIK BİLGİLER:\n- Tarih/Saat: ${currentTime}${weather}${places}`
+    const timeContext = `\n\nANLIK BİLGİLER:\n- Tarih/Saat: ${currentTime}${weather}${places}\n\nÖNEMLİ: Yukarıdaki saat bilgisini kullan. Yerlerin açık/kapalı durumunu bu saate göre değerlendir. Asla yanlış saat tahmini yapma.`
 
     if (!guest) return basePrompt + timeContext
 
