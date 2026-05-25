@@ -11,8 +11,8 @@ type ConversationWithContext = Conversation & {
 const DEFAULT_MODEL = 'claude-sonnet-4-5'
 const FAST_MODEL = 'claude-haiku-4-5-20251001'
 
-const HOTEL_LAT = 36.8579
-const HOTEL_LON = 31.0576
+const HOTEL_LAT = 36.8706211
+const HOTEL_LON = 31.014864
 
 const PLACE_KEYWORDS: { keywords: string[]; type: string; label: string }[] = [
   { keywords: ['eczane', 'pharmacy', 'apteka', 'apotheke'], type: 'pharmacy', label: 'Eczane' },
