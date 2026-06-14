@@ -1,79 +1,129 @@
 import { FastifyInstance } from 'fastify'
-import { WhatsAppService } from './whatsapp.service'
 import { ChatService } from '../chat/chat.service'
 import { authenticate, requireRole } from '../../common/guards/auth.guard'
 import { createError } from '../../common/utils/errors'
 
+async function resolveMediaUrl(accessToken: string, mediaId: string): Promise<string | undefined> {
+  try {
+    const apiVersion = process.env.WA_API_VERSION ?? 'v21.0'
+    const res = await fetch(`https://graph.facebook.com/${apiVersion}/${mediaId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    const data = await res.json() as any
+    return data.url
+  } catch {
+    return undefined
+  }
+}
+
 export async function whatsappRoutes(app: FastifyInstance) {
-  const waService = new WhatsAppService(app)
   const chatService = new ChatService(app)
 
-  // ── Twilio Webhook (gelen mesajlar) ──────────────────────
-  app.post('/webhook', {
-    schema: { tags: ['WhatsApp'], summary: 'Receive Twilio WhatsApp events' },
+  // ── Meta Webhook Doğrulama (GET) ──────────────────────────
+  app.get('/webhook', {
+    schema: { tags: ['WhatsApp'], summary: 'Meta webhook verification' },
     handler: async (request, reply) => {
-      const body = request.body as Record<string, string>
+      const query = request.query as Record<string, string>
+      const mode = query['hub.mode']
+      const token = query['hub.verify_token']
+      const challenge = query['hub.challenge']
 
-      app.log.info({ body }, 'Twilio webhook received')
+      const verifyToken = process.env.WA_VERIFY_TOKEN ?? 'stayline_webhook_2026_xY9k'
 
-      const from = (body.From ?? '').replace('whatsapp:', '')
-      const msgBody = body.Body ?? ''
-      const waMessageId = body.MessageSid ?? ''
-      const profileName = body.ProfileName ?? ''
-      const numMedia = parseInt(body.NumMedia ?? '0')
-
-      if (!from || !waMessageId) {
-        return reply.header('Content-Type', 'text/xml').send('<Response></Response>')
+      if (mode === 'subscribe' && token === verifyToken) {
+        app.log.info('Meta webhook verified')
+        return reply.status(200).send(challenge)
       }
 
-      // Medya varsa URL'lerini topla
-      const mediaItems: { url: string; contentType: string }[] = []
-      for (let i = 0; i < numMedia; i++) {
-        const mediaUrl = body[`MediaUrl${i}`]
-        const mediaContentType = body[`MediaContentType${i}`] ?? 'image/jpeg'
-        if (mediaUrl) {
-          mediaItems.push({ url: mediaUrl, contentType: mediaContentType })
+      app.log.warn({ mode }, 'Meta webhook verification failed')
+      return reply.status(403).send('Forbidden')
+    },
+  })
+
+  // ── Meta Webhook (POST) - gelen mesajlar ──────────────────
+  app.post('/webhook', {
+    schema: { tags: ['WhatsApp'], summary: 'Receive Meta WhatsApp events' },
+    handler: async (request, reply) => {
+      const body = request.body as any
+
+      app.log.info({ body: JSON.stringify(body) }, 'Meta webhook received')
+
+      reply.status(200).send('EVENT_RECEIVED')
+
+      try {
+        const entry = body.entry?.[0]
+        const change = entry?.changes?.[0]
+        const value = change?.value
+
+        if (!value) return
+
+        const phoneNumberId = value.metadata?.phone_number_id
+        const messages = value.messages
+        const contacts = value.contacts
+
+        if (!messages || messages.length === 0) return
+
+        const message = messages[0]
+        const from = message.from
+        const waMessageId = message.id
+        const profileName = contacts?.[0]?.profile?.name ?? ''
+
+        let msgBody = ''
+        let contentType: 'TEXT' | 'IMAGE' | 'DOCUMENT' | 'AUDIO' | 'VIDEO' = 'TEXT'
+        let mediaId: string | undefined
+        let mediaMimeType: string | undefined
+
+        if (message.type === 'text') {
+          msgBody = message.text?.body ?? ''
+          contentType = 'TEXT'
+        } else if (message.type === 'image') {
+          msgBody = message.image?.caption ?? ''
+          contentType = 'IMAGE'
+          mediaId = message.image?.id
+          mediaMimeType = message.image?.mime_type
+        } else if (message.type === 'video') {
+          msgBody = message.video?.caption ?? ''
+          contentType = 'VIDEO'
+          mediaId = message.video?.id
+          mediaMimeType = message.video?.mime_type
+        } else if (message.type === 'audio') {
+          contentType = 'AUDIO'
+          mediaId = message.audio?.id
+          mediaMimeType = message.audio?.mime_type
+        } else if (message.type === 'document') {
+          msgBody = message.document?.caption ?? message.document?.filename ?? ''
+          contentType = 'DOCUMENT'
+          mediaId = message.document?.id
+          mediaMimeType = message.document?.mime_type
         }
+
+        const hotel = await app.prisma.hotel.findFirst({
+          where: { waPhoneNumberId: phoneNumberId },
+        })
+
+        const targetHotel = hotel ?? await app.prisma.hotel.findFirst({ where: { isActive: true } })
+        if (!targetHotel) {
+          app.log.warn({ phoneNumberId }, 'No hotel found for phone number id')
+          return
+        }
+
+        let mediaUrl: string | undefined
+        if (mediaId) {
+          mediaUrl = await resolveMediaUrl(targetHotel.waAccessToken ?? '', mediaId)
+        }
+
+        await chatService.handleInboundMessage(targetHotel.id, {
+          waContactId: from,
+          waMessageId,
+          body: msgBody || (mediaId ? '[Medya]' : ''),
+          contentType,
+          displayName: profileName,
+          mediaUrl,
+          mediaContentType: mediaMimeType,
+        })
+      } catch (err) {
+        app.log.error({ err }, 'Meta webhook processing error')
       }
-
-      // İçerik tipini belirle
-      let contentType: 'TEXT' | 'IMAGE' | 'DOCUMENT' | 'AUDIO' | 'VIDEO' = 'TEXT'
-      if (mediaItems.length > 0) {
-        const ct = mediaItems[0].contentType
-        if (ct.startsWith('image/')) contentType = 'IMAGE'
-        else if (ct.startsWith('video/')) contentType = 'VIDEO'
-        else if (ct.startsWith('audio/')) contentType = 'AUDIO'
-        else contentType = 'DOCUMENT'
-      }
-
-      // Hangi otel bu numaraya sahip?
-      const hotel = await app.prisma.hotel.findFirst({
-        where: {
-          OR: [
-            { waPhoneNumberId: body.To },
-            { waPhoneNumberId: `whatsapp:${body.To}` },
-          ]
-        },
-      })
-
-      const targetHotel = hotel ?? await app.prisma.hotel.findFirst({ where: { isActive: true } })
-
-      if (!targetHotel) {
-        app.log.warn({ to: body.To }, 'No hotel found')
-        return reply.header('Content-Type', 'text/xml').send('<Response></Response>')
-      }
-
-      await chatService.handleInboundMessage(targetHotel.id, {
-        waContactId: from,
-        waMessageId,
-        body: msgBody || (mediaItems.length > 0 ? '[Medya]' : ''),
-        contentType,
-        displayName: profileName,
-        mediaUrl: mediaItems[0]?.url,
-        mediaContentType: mediaItems[0]?.contentType,
-      })
-
-      return reply.header('Content-Type', 'text/xml').send('<Response></Response>')
     },
   })
 

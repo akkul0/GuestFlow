@@ -16,8 +16,8 @@ export class WhatsAppService {
     conversation: {
       waContactId: string
       hotel: {
-        waPhoneNumberId?: string | null  // Twilio'da: "whatsapp:+14155238886"
-        waAccessToken?: string | null    // Twilio'da: "ACxxx:authtoken" (base64)
+        waPhoneNumberId?: string | null  // Meta Phone Number ID (örn: "1150721154796684")
+        waAccessToken?: string | null    // Meta Access Token (EAA...)
       }
     },
     payload: {
@@ -33,45 +33,45 @@ export class WhatsAppService {
       throw createError(503, 'WhatsApp not configured for this hotel')
     }
 
-    // waAccessToken formatı: "ACxxxxx:authtoken" şeklinde kaydet
-    const [accountSid, authToken] = waAccessToken.split(':')
+    // Misafir numarası - başındaki + ve whatsapp: temizle
+    const to = conversation.waContactId.replace('whatsapp:', '').replace('+', '')
 
-    const to = conversation.waContactId.startsWith('whatsapp:')
-      ? conversation.waContactId
-      : `whatsapp:${conversation.waContactId}`
-
-    const from = waPhoneNumberId.startsWith('whatsapp:')
-      ? waPhoneNumberId
-      : `whatsapp:${waPhoneNumberId}`
+    const apiVersion = process.env.WA_API_VERSION ?? 'v21.0'
+    const url = `https://graph.facebook.com/${apiVersion}/${waPhoneNumberId}/messages`
 
     try {
       const res = await this.client.post(
-        `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
-        new URLSearchParams({
-          From: from,
-          To: to,
-          Body: payload.body ?? '',
-        }),
+        url,
         {
-          auth: { username: accountSid, password: authToken },
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          messaging_product: 'whatsapp',
+          to,
+          type: 'text',
+          text: { body: payload.body ?? '' },
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${waAccessToken}`,
+          },
         },
       )
 
-      return res.data.sid as string
+      // Meta response: { messages: [{ id: "wamid.xxx" }] }
+      return res.data?.messages?.[0]?.id ?? 'unknown'
     } catch (err: unknown) {
-      const axiosErr = err as { response?: { data?: { message?: string } } }
-      const twilioError = axiosErr.response?.data?.message ?? 'Unknown Twilio error'
-      throw createError(502, twilioError)
+      const axiosErr = err as { response?: { data?: { error?: { message?: string } } } }
+      const metaError = axiosErr.response?.data?.error?.message ?? 'Unknown Meta API error'
+      this.app.log.error({ err: axiosErr.response?.data }, 'Meta sendMessage failed')
+      throw createError(502, metaError)
     }
   }
 
-  verifyWebhookSignature(payload: string, signature: string, secret: string): boolean {
-    // Twilio signature validation
+  // Meta webhook signature doğrulama (X-Hub-Signature-256)
+  verifyWebhookSignature(payload: string, signature: string, appSecret: string): boolean {
     const expectedSig = crypto
-      .createHmac('sha1', secret)
+      .createHmac('sha256', appSecret)
       .update(Buffer.from(payload))
-      .digest('base64')
-    return signature === `${expectedSig}`
+      .digest('hex')
+    return signature === `sha256=${expectedSig}`
   }
 }
