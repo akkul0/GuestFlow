@@ -406,13 +406,12 @@ export class ChatService {
 
   private async notifyOrderTaker(conversation: any, guestMessage: string, roomNo?: string, mediaUrl?: string) {
     try {
-      const ORDER_TAKER_PHONE = process.env.ORDER_TAKER_PHONE ?? '+905319505440'
+      const ORDER_TAKER_PHONE = (process.env.ORDER_TAKER_PHONE ?? '+905319505440').replace('+', '')
       const { hotel, guest } = conversation
 
-      const waAccessToken = hotel.waAccessToken ?? ''
-      if (!waAccessToken) return
-      const [accountSid, authToken] = waAccessToken.split(':')
-      if (!accountSid || !authToken) return
+      const accessToken = hotel.waAccessToken ?? ''
+      const phoneNumberId = hotel.waPhoneNumberId ?? ''
+      if (!accessToken || !phoneNumberId) return
 
       const guestName = guest ? `${guest.firstName} ${guest.lastName}` : 'Bilinmiyor'
       const resolvedRoom = roomNo ?? guest?.room?.number ?? guest?.roomId ?? 'Bilinmiyor'
@@ -436,32 +435,45 @@ export class ChatService {
         `${urgencyText}\n` +
         `⏰ Saat: ${time}`
 
-      const fromNumber = hotel.waPhoneNumberId?.replace('whatsapp:', '') ?? '+14155238886'
-
-      const formData = new URLSearchParams({
-        From: `whatsapp:${fromNumber}`,
-        To: `whatsapp:${ORDER_TAKER_PHONE}`,
-        Body: msg,
-      })
-
-      if (mediaUrl) {
-        formData.set('MediaUrl0', mediaUrl)
-      }
-
+      const apiVersion = process.env.WA_API_VERSION ?? 'v21.0'
       const res = await fetch(
-        `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
+        `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`,
         {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Authorization': `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}`,
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${accessToken}`,
           },
-          body: formData,
+          body: JSON.stringify({
+            messaging_product: 'whatsapp',
+            to: ORDER_TAKER_PHONE,
+            type: 'text',
+            text: { body: msg },
+          }),
         }
       )
 
       if (res.ok) {
         this.app.log.info({ resolvedRoom, guestName, category: category.category }, 'Order taker notified')
+
+        if (mediaUrl) {
+          await fetch(
+            `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${accessToken}`,
+              },
+              body: JSON.stringify({
+                messaging_product: 'whatsapp',
+                to: ORDER_TAKER_PHONE,
+                type: 'image',
+                image: { link: mediaUrl },
+              }),
+            }
+          ).catch(() => {})
+        }
       } else {
         const err = await res.text()
         this.app.log.error({ err }, 'Order taker WhatsApp failed')
