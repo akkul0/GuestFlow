@@ -33,25 +33,51 @@ function detectPlaceSearch(text: string): { type: string; label: string } | null
   return null
 }
 
-function detectDirectionRequest(text: string): string | null {
-  const lower = text.toLowerCase()
-  const patterns = [
-    /nasıl giderim[^?]*?([a-zçğıöşü\s]+(?:eczane|market|restoran|kafe|otel|plaj|hastane|banka|atm))/i,
-    /([a-zçğıöşü\s']+(?:eczane|market|restoran|kafe|otel|plaj|hastane|banka|atm))[a-z\s]*nasıl giderim/i,
-    /([a-zçğıöşü\s']+(?:eczane|market|restoran|kafe|otel|plaj|hastane|banka|atm))[a-z\s]*yol tarifi/i,
-    /how (?:do i get|to get) to ([a-z\s]+)/i,
-    /directions? to ([a-z\s]+)/i,
-    /как добраться до ([а-яё\s]+)/i,
-  ]
-  for (const pattern of patterns) {
-    const match = text.match(pattern)
-    if (match) return match[1]?.trim() ?? null
-  }
-  // Genel yol tarifi isteği
-  if (lower.includes('nasıl giderim') || lower.includes('yol tarifi') || lower.includes('directions to') || lower.includes('how to get to')) {
-    return text
+const DIRECTION_TRIGGERS = [
+  'nasıl giderim', 'nasıl gideriz', 'nasıl gidebilirim', 'yol tarifi', 'yolu tarif',
+  'nasıl gidilir', 'ne tarafta', 'nerede', 'directions', 'how to get', 'how do i get',
+  'как добраться', 'wie komme ich', 'tarif ver', 'gitmek istiyorum', 'gidiş'
+]
+
+const PLACE_DETAIL_TRIGGERS = [
+  'telefon', 'numara', 'numarası', 'ara', 'iletişim', 'phone', 'number',
+  'adres', 'address', 'açık mı', 'kaçta açıl', 'kaçta kapan', 'çalışma saat', 'puan', 'yorum'
+]
+
+// Cümleden mekan adını çıkar (örn: "Vural Eczanesi'ne yol tarifi" -> "Vural Eczanesi")
+function extractPlaceName(text: string): string | null {
+  // Bilinen mekan tiplerini içeren kelime gruplarını yakala
+  const placePattern = /([A-ZÇĞİÖŞÜa-zçğıöşü0-9]+(?:\s+[A-ZÇĞİÖŞÜa-zçğıöşü0-9]+){0,3}\s*(?:eczane|eczanesi|market|marketi|restoran|restaurant|restoranı|kafe|cafe|kafesi|otel|oteli|hotel|plaj|plajı|beach|hastane|hastanesi|hospital|banka|bankası|bank|atm|avm|mall|pastane|pastanesi|cami|camii|park|parkı|müze|müzesi))/i
+  const match = text.match(placePattern)
+  if (match) {
+    // Kesme işareti ve eklerini temizle ("Eczanesi'ne" -> "Eczanesi")
+    let name = match[1].trim()
+    name = name.replace(/['''].*$/, '') // kesme işaretinden sonrasını at
+    return name.trim()
   }
   return null
+}
+
+function detectDirectionRequest(text: string): string | null {
+  const lower = text.toLowerCase()
+  const hasTrigger = DIRECTION_TRIGGERS.some(t => lower.includes(t))
+  if (!hasTrigger) return null
+
+  // Mekan adı çıkarmaya çalış
+  const placeName = extractPlaceName(text)
+  if (placeName) return placeName
+
+  // Mekan adı yoksa ama tetikleyici varsa, tüm metni gönder
+  return text
+}
+
+function detectPlaceDetailRequest(text: string): string | null {
+  const lower = text.toLowerCase()
+  const hasTrigger = PLACE_DETAIL_TRIGGERS.some(t => lower.includes(t))
+  if (!hasTrigger) return null
+
+  const placeName = extractPlaceName(text)
+  return placeName // sadece belirli bir mekan adı varsa detay ara
 }
 
 export class AiService {
@@ -114,16 +140,28 @@ export class AiService {
       const apiKey = process.env.GOOGLE_PLACES_API_KEY
       if (!apiKey) return ''
 
-      // Önce hedefin koordinatlarını bul
-      const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(destination + ' Belek Antalya Turkey')}&key=${apiKey}&language=tr`
-      const geocodeRes = await fetch(geocodeUrl)
-      const geocodeData = await geocodeRes.json() as any
+      let destLat: number | undefined
+      let destLng: number | undefined
 
-      if (!geocodeData.results?.length) return ''
+      // Önce Find Place ile gerçek mekanı bul (daha doğru)
+      const findUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(destination + ' Belek Antalya')}&inputtype=textquery&fields=geometry,name&key=${apiKey}&language=tr`
+      const findRes = await fetch(findUrl)
+      const findData = await findRes.json() as any
 
-      const destLat = geocodeData.results[0].geometry.location.lat
-      const destLng = geocodeData.results[0].geometry.location.lng
-      const destName = geocodeData.results[0].formatted_address
+      if (findData.candidates?.length && findData.candidates[0].geometry) {
+        destLat = findData.candidates[0].geometry.location.lat
+        destLng = findData.candidates[0].geometry.location.lng
+      } else {
+        // Bulunamazsa Geocoding'e düş
+        const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(destination + ' Belek Antalya Turkey')}&key=${apiKey}&language=tr`
+        const geocodeRes = await fetch(geocodeUrl)
+        const geocodeData = await geocodeRes.json() as any
+        if (!geocodeData.results?.length) return ''
+        destLat = geocodeData.results[0].geometry.location.lat
+        destLng = geocodeData.results[0].geometry.location.lng
+      }
+
+      if (destLat === undefined || destLng === undefined) return ''
 
       // Directions API
       const dirUrl = `https://maps.googleapis.com/maps/api/directions/json?origin=${HOTEL_LAT},${HOTEL_LON}&destination=${destLat},${destLng}&mode=walking&key=${apiKey}&language=tr`
@@ -145,6 +183,45 @@ export class AiService {
       const mapsLink = `https://www.google.com/maps/dir/${HOTEL_LAT},${HOTEL_LON}/${destLat},${destLng}`
 
       return `\n\n🗺️ **${destination} Yol Tarifi:**\n🚶 Yürüyerek: ${duration} (${distance})\n\n📍 Adımlar:\n${steps}\n\n🔗 Google Maps: ${mapsLink}`
+    } catch {
+      return ''
+    }
+  }
+
+  private async getPlaceDetails(placeName: string): Promise<string> {
+    try {
+      const apiKey = process.env.GOOGLE_PLACES_API_KEY
+      if (!apiKey) return ''
+
+      // Önce mekanı bul (Find Place)
+      const findUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(placeName + ' Belek Antalya')}&inputtype=textquery&fields=place_id,name&key=${apiKey}&language=tr`
+      const findRes = await fetch(findUrl)
+      const findData = await findRes.json() as any
+
+      if (!findData.candidates?.length) return ''
+      const placeId = findData.candidates[0].place_id
+
+      // Detayları al
+      const detailUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,formatted_phone_number,international_phone_number,opening_hours,rating,website&key=${apiKey}&language=tr`
+      const detailRes = await fetch(detailUrl)
+      const detailData = await detailRes.json() as any
+
+      if (!detailData.result) return ''
+      const r = detailData.result
+
+      let info = `\n\n📍 **${r.name}** bilgileri:`
+      if (r.formatted_phone_number) info += `\n📞 Telefon: ${r.formatted_phone_number}`
+      if (r.formatted_address) info += `\n🏠 Adres: ${r.formatted_address}`
+      if (r.rating) info += `\n⭐ Puan: ${r.rating}`
+      if (r.opening_hours?.open_now !== undefined) {
+        info += r.opening_hours.open_now ? `\n🟢 Şu an açık` : `\n🔴 Şu an kapalı`
+      }
+      if (r.opening_hours?.weekday_text?.length) {
+        info += `\n🕐 Çalışma saatleri:\n${r.opening_hours.weekday_text.join('\n')}`
+      }
+      if (r.website) info += `\n🌐 Web: ${r.website}`
+
+      return info
     } catch {
       return ''
     }
@@ -201,11 +278,19 @@ export class AiService {
     const currentTime = this.getCurrentTime()
     const weather = await this.getWeather()
 
-    // Konum bazlı arama
+    // Konum bazlı arama (öncelik sırası: detay > yol tarifi > yakın arama)
     let places = ''
     const lastText = lastMessage.body ?? ''
+    const detailRequest = detectPlaceDetailRequest(lastText)
     const directionRequest = detectDirectionRequest(lastText)
-    if (directionRequest) {
+
+    if (detailRequest) {
+      places = await this.getPlaceDetails(detailRequest)
+      // Detay bulunamazsa yol tarifine düş
+      if (!places && directionRequest) {
+        places = await this.getDirections(directionRequest)
+      }
+    } else if (directionRequest) {
       places = await this.getDirections(directionRequest)
     } else {
       const placeSearch = detectPlaceSearch(lastText)
