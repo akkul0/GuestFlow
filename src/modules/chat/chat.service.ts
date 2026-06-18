@@ -332,9 +332,9 @@ export class ChatService {
           await this.sendAutoAiReply(fullConversation, aiReply)
         }
 
-        // Order Taker'a bildirim - sadece oda numarası alındıktan sonra
-        if (data.body && data.body.trim().length > 0) {
-          await this.checkAndNotifyOrderTaker(fullConversation, data.body).catch((err) => {
+        // Order Taker'a bildirim - sadece son mesaj talepse
+        if ((data.body && data.body.trim().length > 0) || data.mediaUrl) {
+          await this.checkAndNotifyOrderTaker(fullConversation, data.body ?? '', data.mediaUrl).catch((err) => {
             this.app.log.error({ err }, 'Order taker notification failed')
           })
         }
@@ -364,49 +364,35 @@ export class ChatService {
     return match ? match[1] : null
   }
 
-  private async checkAndNotifyOrderTaker(conversation: any, latestMessage: string) {
+  private async checkAndNotifyOrderTaker(conversation: any, latestMessage: string, latestMediaUrl?: string) {
     const messages = conversation.messages ?? []
 
-    // Oda numarası bul - önce konuşma geçmişinden, sonra son mesajdan
-    let roomNo: string | null = null
-    let requestMessage = latestMessage
-    let mediaUrl: string | undefined
+    // SADECE son mesaj bir talepse VEYA fotoğraf eklendiyse bildirim gonder.
+    // Eski talepleri tekrar tetikleme!
+    const lastIsRequest = this.isServiceRequest(latestMessage)
+    const hasMedia = !!latestMediaUrl
 
-    // Son mesajda oda numarası var mı?
-    const roomFromLastMsg = this.extractRoomNumber(latestMessage)
+    if (!lastIsRequest && !hasMedia) return
 
-    // Konuşma geçmişinde oda numarası ara
-    for (const m of messages) {
-      const r = this.extractRoomNumber(m.body ?? '')
-      if (r) { roomNo = r; break }
-    }
-    if (!roomNo && roomFromLastMsg) roomNo = roomFromLastMsg
-
-    // Talep mesajını bul
-    if (this.isServiceRequest(latestMessage)) {
-      requestMessage = latestMessage
-    } else {
-      // Önceki inbound mesajlarda talep ara
-      const prevReq = messages.slice(1).find((m: any) =>
-        m.direction === 'INBOUND' && this.isServiceRequest(m.body ?? '')
-      )
-      if (prevReq) requestMessage = prevReq.body ?? latestMessage
+    // Oda numarasini bul: once son mesajda, yoksa konusma gecmisinde
+    let roomNo: string | null = this.extractRoomNumber(latestMessage)
+    if (!roomNo) {
+      for (const m of messages) {
+        const r = this.extractRoomNumber(m.body ?? '')
+        if (r) { roomNo = r; break }
+      }
     }
 
-    // Medya URL'si var mı?
-    const lastMsgWithMedia = messages.find((m: any) => m.direction === 'INBOUND' && m.mediaUrl)
-    if (lastMsgWithMedia) mediaUrl = lastMsgWithMedia.mediaUrl
-
-    // Talep değilse ve oda numarası yoksa bildirim gönderme
-    if (!this.isServiceRequest(requestMessage) && !mediaUrl) return
+    // Oda numarasi yoksa bildirim gonderme (AI misafirden oda no isteyecek)
     if (!roomNo) return
 
-    await this.notifyOrderTaker(conversation, requestMessage, roomNo, mediaUrl)
+    // Her zaman SON mesaji gonder (eski talebi degil)
+    await this.notifyOrderTaker(conversation, latestMessage, roomNo, latestMediaUrl)
   }
 
   private async notifyOrderTaker(conversation: any, guestMessage: string, roomNo?: string, mediaUrl?: string) {
     try {
-      const ORDER_TAKER_PHONE = (process.env.ORDER_TAKER_PHONE ?? '+905319505440').replace('+', '')
+      const ORDER_TAKER_PHONE = (process.env.ORDER_TAKER_PHONE ?? '+905514072515').replace('+', '')
       const { hotel, guest } = conversation
 
       const accessToken = hotel.waAccessToken ?? ''
