@@ -439,8 +439,13 @@ export class ChatService {
         }
       )
 
-      if (res.ok) {
-        this.app.log.info({ resolvedRoom, guestName, category: category.category }, 'Order taker notified')
+      const metaResponse = await res.json().catch(() => ({}))
+
+      if (res.ok && (metaResponse as any).messages) {
+        this.app.log.info(
+          { resolvedRoom, guestName, category: category.category, to: ORDER_TAKER_PHONE, metaResponse },
+          'Order taker notified - Meta accepted'
+        )
 
         if (mediaUrl) {
           await fetch(
@@ -461,8 +466,10 @@ export class ChatService {
           ).catch(() => {})
         }
       } else {
-        const err = await res.text()
-        this.app.log.error({ err }, 'Order taker WhatsApp failed')
+        this.app.log.error(
+          { to: ORDER_TAKER_PHONE, status: res.status, metaResponse },
+          'Order taker WhatsApp FAILED - Meta rejected'
+        )
       }
     } catch (err) {
       this.app.log.error({ err }, 'notifyOrderTaker error')
