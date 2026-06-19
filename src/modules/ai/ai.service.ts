@@ -84,7 +84,11 @@ export class AiService {
   private client: Anthropic
 
   constructor(private app: FastifyInstance) {
-    this.client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+    this.client = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      maxRetries: 3,
+      timeout: 30000,
+    })
   }
 
   private async getWeather(): Promise<string> {
@@ -338,20 +342,37 @@ export class AiService {
     if (firstUserIdx === -1) return null
     const finalHistory = chatHistory.slice(firstUserIdx)
 
-    try {
-      const res = await this.client.messages.create({
-        model: hotel.aiModel ?? process.env.ANTHROPIC_MODEL ?? DEFAULT_MODEL,
-        max_tokens: parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? '500'),
-        system: systemPrompt,
-        messages: finalHistory,
-      })
+    const model = hotel.aiModel ?? process.env.ANTHROPIC_MODEL ?? DEFAULT_MODEL
+    const maxTokens = parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? '500')
 
-      const block = res.content[0]
-      return block?.type === 'text' ? block.text : null
-    } catch (err) {
-      this.app.log.error({ err }, 'Claude generateReply failed')
-      return null
+    // Premature close / gecici ag hatalarina karsi 3 kez dene
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await this.client.messages.create({
+          model,
+          max_tokens: maxTokens,
+          system: systemPrompt,
+          messages: finalHistory,
+        })
+        const block = res.content[0]
+        return block?.type === 'text' ? block.text : null
+      } catch (err: any) {
+        const isRetryable =
+          err?.code === 'ERR_STREAM_PREMATURE_CLOSE' ||
+          err?.name === 'FetchError' ||
+          err?.message?.includes('Premature close') ||
+          err?.message?.includes('fetch failed')
+
+        if (isRetryable && attempt < 3) {
+          this.app.log.warn({ attempt, err: err?.message }, 'Claude retry')
+          await new Promise(r => setTimeout(r, 500 * attempt))
+          continue
+        }
+        this.app.log.error({ err }, 'Claude generateReply failed')
+        return null
+      }
     }
+    return null
   }
 
   async translateMessage(text: string, targetLanguage: string): Promise<string> {
