@@ -15,6 +15,8 @@ export const sendMessageSchema = z.object({
   templateName: z.string().optional(),
   templateData: z.record(z.unknown()).optional(),
   mediaUrl: z.string().url().optional(),
+  autoTranslate: z.boolean().optional(),
+  clientMsgId: z.string().optional(),
 })
 
 export type ListConversationsQuery = z.infer<typeof listConversationsSchema>
