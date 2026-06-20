@@ -284,7 +284,7 @@ export class AiService {
 
     // Konum bazlı arama (öncelik sırası: detay > yol tarifi > yakın arama)
     let places = ''
-    const lastText = lastMessage.body ?? ''
+    const lastText = (lastMessage as any).bodyOriginal ?? lastMessage.body ?? ''
     const detailRequest = detectPlaceDetailRequest(lastText)
     const directionRequest = detectDirectionRequest(lastText)
 
@@ -310,7 +310,11 @@ export class AiService {
 
     for (const m of allMessages) {
       const role = m.direction === 'INBOUND' ? ('user' as const) : ('assistant' as const)
-      const text = m.body ?? ''
+      // Gelen mesaj Turkce'ye cevrildiyse, AI misafirin GERCEK dilini gormeli
+      // (dogru dilde cevap verebilmesi icin). Bu yuzden varsa orijinali kullan.
+      const text = m.direction === 'INBOUND'
+        ? ((m as any).bodyOriginal ?? m.body ?? '')
+        : (m.body ?? '')
 
       // Son mesaj ve görsel varsa image olarak gönder
       if (m.id === lastMessage.id && (m as any).mediaUrl && m.direction === 'INBOUND') {
