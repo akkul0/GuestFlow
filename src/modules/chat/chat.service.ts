@@ -133,6 +133,31 @@ export class ChatService {
     })
     if (!conversation) throw createError(404, 'Conversation not found')
 
+    // ── Giden mesaj cevirisi ──────────────────────────────
+    // Calisan Turkce yazar. Misafirin dili Turkce degilse, mesaji misafirin
+    // diline cevir. Orijinal Turkce'yi sakla (panelde calisan gorur),
+    // cevrilmis hali misafire gider.
+    let outBody = body.body                 // misafire gidecek metin
+    let outOriginal: string | null = null   // calisanin yazdigi (Turkce)
+    let outToLang: string | null = null
+
+    const guestLang = conversation.language ?? 'tr'
+    if (
+      body.body &&
+      body.body.trim().length > 0 &&
+      (body.contentType ?? 'TEXT') === 'TEXT' &&
+      !body.templateName &&
+      guestLang && !guestLang.startsWith('tr')
+    ) {
+      const targetLangName = this.langName(guestLang)
+      const translated = await this.aiService.translateMessage(body.body, targetLangName)
+      if (translated && translated !== body.body) {
+        outOriginal = body.body        // calisanin orijinal Turkce metni
+        outBody = translated           // misafire gidecek ceviri
+        outToLang = guestLang
+      }
+    }
+
     // Create pending message record
     const message = await this.app.prisma.message.create({
       data: {
@@ -140,7 +165,9 @@ export class ChatService {
         hotelId,
         direction: MessageDirection.OUTBOUND,
         contentType: body.contentType ?? 'TEXT',
-        body: body.body,
+        body: outBody,
+        bodyOriginal: outOriginal,
+        translatedFrom: outToLang ? 'tr' : null,
         templateName: body.templateName,
         templateData: body.templateData,
         status: MessageStatus.PENDING,
@@ -149,9 +176,12 @@ export class ChatService {
       },
     })
 
-    // Send via WhatsApp API
+    // Send via WhatsApp API (cevrilmis metni gonder)
     try {
-      const waMessageId = await this.waService.sendMessage(conversation, body)
+      const waMessageId = await this.waService.sendMessage(conversation, {
+        ...body,
+        body: outBody,
+      })
 
       await this.app.prisma.message.update({
         where: { id: message.id },
@@ -290,6 +320,34 @@ export class ChatService {
       })
     }
 
+    // ── Gelen mesaj cevirisi ──────────────────────────────
+    // Misafir Turkce disinda yazdiysa: dilini tespit et, konusmaya kaydet,
+    // mesaji Turkce'ye cevir (calisanin okumasi icin).
+    let inboundBody = data.body
+    let inboundOriginal: string | null = null
+    let inboundFromLang: string | null = null
+
+    if (data.body && data.body.trim().length > 0 && data.contentType === 'TEXT') {
+      const detectedLang = await this.aiService.detectLanguage(data.body)
+      // Misafir dili Turkce degilse cevir
+      if (detectedLang && !detectedLang.startsWith('tr')) {
+        const translated = await this.aiService.translateMessage(data.body, 'Turkish')
+        if (translated && translated !== data.body) {
+          inboundOriginal = data.body          // orijinal (misafirin dili)
+          inboundBody = translated             // Turkce ceviri (calisan gorur)
+          inboundFromLang = detectedLang
+        }
+        // Konusmanin dilini guncelle (sonraki giden mesajlar bu dile cevrilecek)
+        if (conversation.language !== detectedLang) {
+          await this.app.prisma.conversation.update({
+            where: { id: conversation.id },
+            data: { language: detectedLang },
+          })
+          conversation.language = detectedLang
+        }
+      }
+    }
+
     // Save message
     const message = await this.app.prisma.message.create({
       data: {
@@ -298,7 +356,9 @@ export class ChatService {
         waMessageId: data.waMessageId,
         direction: MessageDirection.INBOUND,
         contentType: data.contentType as 'TEXT',
-        body: data.body,
+        body: inboundBody,
+        bodyOriginal: inboundOriginal,
+        translatedFrom: inboundFromLang,
         mediaUrl: data.mediaUrl,
         status: MessageStatus.DELIVERED,
         deliveredAt: new Date(),
@@ -342,6 +402,18 @@ export class ChatService {
     }
 
     return { conversationId: conversation.id, messageId: message.id }
+  }
+
+  private langName(code: string): string {
+    const map: Record<string, string> = {
+      tr: 'Turkish', en: 'English', de: 'German', ru: 'Russian',
+      ar: 'Arabic', fr: 'French', es: 'Spanish', it: 'Italian',
+      nl: 'Dutch', pl: 'Polish', uk: 'Ukrainian', fa: 'Persian',
+      zh: 'Chinese', ja: 'Japanese', ko: 'Korean', pt: 'Portuguese',
+      ro: 'Romanian', bg: 'Bulgarian', el: 'Greek', he: 'Hebrew',
+    }
+    const short = code.slice(0, 2).toLowerCase()
+    return map[short] ?? 'English'
   }
 
   private isServiceRequest(text: string): boolean {
