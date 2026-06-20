@@ -143,6 +143,7 @@ export class ChatService {
 
     const guestLang = conversation.language ?? 'tr'
     if (
+      body.autoTranslate === true &&
       body.body &&
       body.body.trim().length > 0 &&
       (body.contentType ?? 'TEXT') === 'TEXT' &&
