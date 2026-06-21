@@ -47,19 +47,90 @@ export async function reportsRoutes(app: FastifyInstance) {
     },
   })
 
-  // GET /reports/daily
+  // GET /reports/daily — son 30 gün (geçmiş kayıtlar + bugün CANLI)
   app.get<{ Querystring: { from?: string; to?: string } }>('/daily', {
-    schema: { tags: ['Reports'], summary: 'Daily aggregated reports' },
+    schema: { tags: ['Reports'], summary: 'Daily aggregated reports (last 30 days, today live)' },
     handler: async (request, reply) => {
-      const from = request.query.from ? new Date(request.query.from) : dayjs().subtract(30, 'day').toDate()
+      const hotelId = request.user.hotelId
+      const from = request.query.from ? new Date(request.query.from) : dayjs().subtract(30, 'day').startOf('day').toDate()
       const to = request.query.to ? new Date(request.query.to) : new Date()
+      const todayStart = dayjs().startOf('day').toDate()
 
-      const reports = await app.prisma.dailyReport.findMany({
-        where: { hotelId: request.user.hotelId, date: { gte: from, lte: to } },
+      // Geçmiş günleri kayıtlı tablodan al (bugünden öncesi)
+      const stored = await app.prisma.dailyReport.findMany({
+        where: { hotelId, date: { gte: from, lt: todayStart } },
         orderBy: { date: 'desc' },
       })
 
-      return reply.send({ items: reports })
+      // Bugünü CANLI hesapla (kaydet de — böylece geçmişte saklanır)
+      const todayLive = await generateDailyReport(app, hotelId)
+
+      // newGuests (bugün check-in olan misafir) hesapla — her satır için
+      const items = await enrichWithNewGuests(app, hotelId, [todayLive, ...stored])
+
+      return reply.send({ items })
+    },
+  })
+
+  // GET /reports/daily/today — sadece bugünün canlı özeti (kart için)
+  app.get('/daily/today', {
+    schema: { tags: ['Reports'], summary: "Today's live report" },
+    handler: async (request, reply) => {
+      const hotelId = request.user.hotelId
+      const today = await generateDailyReport(app, hotelId)
+      const [enriched] = await enrichWithNewGuests(app, hotelId, [today])
+      // Açık talep + şikayet sayısı da ekle
+      const todayStart = dayjs().startOf('day').toDate()
+      const [openRequests, complaints] = await Promise.all([
+        app.prisma.order.count({ where: { hotelId, isRequest: true, createdAt: { gte: todayStart } } }),
+        app.prisma.order.count({ where: { hotelId, isComplaint: true, createdAt: { gte: todayStart } } }),
+      ])
+      return reply.send({ ...enriched, openRequests, complaints })
+    },
+  })
+
+  // GET /reports/comparison — bugün / son 3 gün / son 7 gün karşılaştırma
+  app.get('/comparison', {
+    schema: { tags: ['Reports'], summary: 'Compare today / 3-day / 7-day metrics' },
+    handler: async (request, reply) => {
+      const hotelId = request.user.hotelId
+
+      async function metricsForRange(days: number) {
+        const start = dayjs().subtract(days - 1, 'day').startOf('day').toDate()
+        const end = new Date()
+        const [msgStats, aiCount, received, requests, complaints, reachedConvs] = await Promise.all([
+          app.prisma.message.groupBy({
+            by: ['direction'],
+            where: { hotelId, createdAt: { gte: start, lte: end } },
+            _count: { id: true },
+          }),
+          app.prisma.message.count({ where: { hotelId, isAiGenerated: true, createdAt: { gte: start, lte: end } } }),
+          app.prisma.message.count({ where: { hotelId, direction: 'INBOUND', createdAt: { gte: start, lte: end } } }),
+          app.prisma.order.count({ where: { hotelId, isRequest: true, createdAt: { gte: start, lte: end } } }),
+          app.prisma.order.count({ where: { hotelId, isComplaint: true, createdAt: { gte: start, lte: end } } }),
+          app.prisma.conversation.count({
+            where: { hotelId, messages: { some: { direction: 'INBOUND', createdAt: { gte: start, lte: end } } } },
+          }),
+        ])
+        let sent = 0
+        for (const s of msgStats) if (s.direction === 'OUTBOUND') sent += s._count.id
+        const totalMsgs = sent + received
+        return {
+          sent, received, totalMessages: totalMsgs,
+          aiGenerated: aiCount,
+          aiRatePct: sent > 0 ? Math.round((aiCount / sent) * 100) : 0,
+          requests, complaints,
+          guestsReached: reachedConvs,
+        }
+      }
+
+      const [today, last3, last7] = await Promise.all([
+        metricsForRange(1),
+        metricsForRange(3),
+        metricsForRange(7),
+      ])
+
+      return reply.send({ today, last3, last7 })
     },
   })
 
@@ -96,6 +167,135 @@ export async function reportsRoutes(app: FastifyInstance) {
     },
   })
 
+  // GET /reports/mgb — Genel Misafir Bildirimi / Memnuniyet raporu
+  app.get<{ Querystring: { period?: string } }>('/mgb', {
+    schema: { tags: ['Reports'], summary: 'Guest feedback / satisfaction report (MGB)' },
+    handler: async (request, reply) => {
+      const hotelId = request.user.hotelId
+      // Dönem: today | 7d | 30d (varsayılan 7d)
+      const period = request.query.period ?? '7d'
+      const days = period === 'today' ? 1 : period === '30d' ? 30 : 7
+      const start = dayjs().subtract(days - 1, 'day').startOf('day').toDate()
+      const end = new Date()
+
+      const [
+        totalRooms,
+        checkinGuests,
+        msgStats,
+        aiCount,
+        reachedConvs,
+        orders,
+        conversationsWithGuest,
+      ] = await Promise.all([
+        app.prisma.room.count({ where: { hotelId, isActive: true } }),
+        app.prisma.guest.findMany({
+          where: { hotelId, isActive: true, checkInDate: { lte: end }, checkOutDate: { gte: start } },
+          select: { id: true },
+        }),
+        app.prisma.message.groupBy({
+          by: ['direction', 'status'],
+          where: { hotelId, createdAt: { gte: start, lte: end } },
+          _count: { id: true },
+        }),
+        app.prisma.message.count({ where: { hotelId, isAiGenerated: true, createdAt: { gte: start, lte: end } } }),
+        app.prisma.conversation.count({
+          where: { hotelId, messages: { some: { direction: 'INBOUND', createdAt: { gte: start, lte: end } } } },
+        }),
+        // Tüm talep/şikayet kayıtları (departman + şikayet + oda için)
+        app.prisma.order.findMany({
+          where: { hotelId, createdAt: { gte: start, lte: end } },
+          select: {
+            departmentKey: true, urgency: true, requestText: true, roomNumber: true,
+            isComplaint: true, createdAt: true,
+            department: { select: { name: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+        }),
+        // Milliyet + en aktif oda için: dönemde mesajı olan konuşmalar + misafir
+        app.prisma.conversation.findMany({
+          where: { hotelId, messages: { some: { createdAt: { gte: start, lte: end } } } },
+          select: {
+            id: true,
+            guest: { select: { nationality: true, room: { select: { number: true } } } },
+            _count: { select: { messages: true } },
+          },
+        }),
+      ])
+
+      // ── Özet ──
+      let sent = 0, failed = 0, received = 0
+      for (const s of msgStats) {
+        if (s.direction === 'OUTBOUND') {
+          sent += s._count.id
+          if (s.status === 'FAILED') failed += s._count.id
+        } else received += s._count.id
+      }
+      const totalMessages = sent + received
+      const occupancyPct = totalRooms > 0 ? Math.round((checkinGuests.length / totalRooms) * 100) : 0
+      const aiRatePct = sent > 0 ? Math.round((aiCount / sent) * 100) : 0
+
+      // ── Departman dağılımı (tüm talep/şikayetler) ──
+      const deptMap = new Map<string, { label: string; value: number }>()
+      for (const o of orders) {
+        const key = o.departmentKey || 'OTHER'
+        const label = o.department?.name || key
+        const cur = deptMap.get(key) ?? { label, value: 0 }
+        cur.value++
+        deptMap.set(key, cur)
+      }
+      const departments = [...deptMap.entries()]
+        .map(([key, v]) => ({ key, label: v.label, value: v.value }))
+        .sort((a, b) => b.value - a.value)
+
+      // ── Milliyet dağılımı ──
+      const natMap = new Map<string, number>()
+      for (const c of conversationsWithGuest) {
+        const nat = c.guest?.nationality
+        if (nat) natMap.set(nat, (natMap.get(nat) ?? 0) + 1)
+      }
+      const nationalities = [...natMap.entries()]
+        .map(([label, value]) => ({ label, value }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 10)
+
+      // ── En aktif odalar (mesaj sayısına göre) ──
+      const roomMap = new Map<string, number>()
+      for (const c of conversationsWithGuest) {
+        const room = c.guest?.room?.number
+        if (room) roomMap.set(room, (roomMap.get(room) ?? 0) + c._count.messages)
+      }
+      const topRooms = [...roomMap.entries()]
+        .map(([room, msgs]) => ({ room, msgs }))
+        .sort((a, b) => b.msgs - a.msgs)
+        .slice(0, 10)
+
+      // ── Şikayetler (isComplaint=true) ──
+      const urgencyText: Record<string, string> = { HIGH: 'Yüksek', MEDIUM: 'Orta', LOW: 'Düşük' }
+      const complaints = orders
+        .filter((o) => o.isComplaint)
+        .map((o) => ({
+          room: o.roomNumber ?? 'Bilinmiyor',
+          text: o.requestText,
+          urgency: urgencyText[o.urgency] ?? 'Orta',
+        }))
+        .slice(0, 50)
+
+      return reply.send({
+        summary: {
+          occupancyPct,
+          guestsReached: reachedConvs,
+          totalMessages,
+          aiRatePct,
+          failed,
+        },
+        departments,
+        nationalities,
+        topRooms,
+        complaints,
+      })
+    },
+  })
+
   // POST /reports/daily/generate — manually trigger daily report generation
   app.post('/daily/generate', {
     schema: { tags: ['Reports'], summary: 'Manually generate daily report for today' },
@@ -105,6 +305,20 @@ export async function reportsRoutes(app: FastifyInstance) {
       return reply.send(report)
     },
   })
+}
+
+// Her rapor satırına o günkü yeni misafir (check-in) sayısını ekler.
+async function enrichWithNewGuests(app: FastifyInstance, hotelId: string, reports: any[]) {
+  return Promise.all(
+    reports.map(async (r) => {
+      const dayStart = dayjs(r.date).startOf('day').toDate()
+      const dayEnd = dayjs(r.date).endOf('day').toDate()
+      const newGuests = await app.prisma.guest.count({
+        where: { hotelId, checkInDate: { gte: dayStart, lte: dayEnd } },
+      })
+      return { ...r, newGuests }
+    }),
+  )
 }
 
 export async function generateDailyReport(app: FastifyInstance, hotelId: string, date = new Date()) {
