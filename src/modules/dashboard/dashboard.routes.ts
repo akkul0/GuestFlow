@@ -14,24 +14,37 @@ export async function dashboardRoutes(app: FastifyInstance) {
       const from = request.query.from ? dayjs(request.query.from) : dayjs().startOf('day')
       const to = request.query.to ? dayjs(request.query.to).endOf('day') : dayjs().endOf('day')
 
-      const [roomStats, messageStats, templateBreakdown, failureReasons, monthlyTrend, unmatchedCount] =
-        await Promise.all([
+      const todayStart = dayjs().startOf('day').toDate()
+      const [
+        roomStats,
+        messageStats,
+        failureReasons,
+        unmatchedCount,
+        departmentBreakdown,
+        recentOrders,
+        openRequests,
+        todayComplaints,
+      ] = await Promise.all([
           getRoomStats(app, hotelId),
           getMessageStats(app, hotelId, from.toDate(), to.toDate()),
-          getTemplateBreakdown(app, hotelId, from.toDate(), to.toDate()),
           getFailureReasons(app, hotelId, from.toDate(), to.toDate()),
-          getMonthlyTrend(app, hotelId),
           getUnmatchedCount(app, hotelId),
+          getDepartmentBreakdown(app, hotelId),
+          getRecentOrders(app, hotelId),
+          app.prisma.order.count({ where: { hotelId, isRequest: true, status: { in: ['OPEN', 'ACKNOWLEDGED', 'IN_PROGRESS'] } } }),
+          app.prisma.order.count({ where: { hotelId, isComplaint: true, createdAt: { gte: todayStart } } }),
         ])
 
       return reply.send({
         period: { from: from.toISOString(), to: to.toISOString() },
         rooms: roomStats,
         messages: messageStats,
-        templateBreakdown,
         failureReasons,
-        monthlyTrend,
         unmatchedGuests: unmatchedCount,
+        departmentBreakdown,
+        recentOrders,
+        openRequests,
+        todayComplaints,
       })
     },
   })
@@ -136,23 +149,6 @@ async function getMessageStats(app: FastifyInstance, hotelId: string, from: Date
   return { sent, delivered, failed, received, aiGenerated, deliveryRate: sent ? Math.round((delivered / sent) * 100 * 10) / 10 : 0 }
 }
 
-async function getTemplateBreakdown(app: FastifyInstance, hotelId: string, from: Date, to: Date) {
-  const messages = await app.prisma.message.groupBy({
-    by: ['templateName'],
-    where: { hotelId, templateName: { not: null }, createdAt: { gte: from, lte: to } },
-    _count: { id: true },
-    orderBy: { _count: { id: 'desc' } },
-  })
-
-  const total = messages.reduce((s, m) => s + m._count.id, 0)
-  return messages
-    .filter((m) => m.templateName)
-    .map((m) => ({
-      template: m.templateName,
-      count: m._count.id,
-      percent: total ? Math.round((m._count.id / total) * 100 * 10) / 10 : 0,
-    }))
-}
 
 async function getFailureReasons(app: FastifyInstance, hotelId: string, from: Date, to: Date) {
   const failures = await app.prisma.message.groupBy({
@@ -171,27 +167,55 @@ async function getFailureReasons(app: FastifyInstance, hotelId: string, from: Da
   }))
 }
 
-async function getMonthlyTrend(app: FastifyInstance, hotelId: string) {
-  const sixMonthsAgo = dayjs().subtract(6, 'month').startOf('month').toDate()
 
-  const messages = await app.prisma.message.findMany({
-    where: { hotelId, direction: 'OUTBOUND', createdAt: { gte: sixMonthsAgo } },
-    select: { createdAt: true, status: true },
+// Departman dağılımı: hangi departmana kaç talep/şikayet (tüm zamanlar, son 30 gün)
+async function getDepartmentBreakdown(app: FastifyInstance, hotelId: string) {
+  const since = dayjs().subtract(30, 'day').toDate()
+  const orders = await app.prisma.order.findMany({
+    where: { hotelId, createdAt: { gte: since } },
+    select: { departmentKey: true, department: { select: { name: true } } },
   })
-
-  const byMonth: Record<string, { sent: number; delivered: number; failed: number }> = {}
-
-  for (const msg of messages) {
-    const key = dayjs(msg.createdAt).format('YYYY-MM')
-    if (!byMonth[key]) byMonth[key] = { sent: 0, delivered: 0, failed: 0 }
-    byMonth[key].sent++
-    if (['DELIVERED', 'READ'].includes(msg.status)) byMonth[key].delivered++
-    if (msg.status === 'FAILED') byMonth[key].failed++
+  const map = new Map<string, { label: string; count: number }>()
+  for (const o of orders) {
+    const key = o.departmentKey || 'OTHER'
+    const label = o.department?.name || key
+    const cur = map.get(key) ?? { label, count: 0 }
+    cur.count++
+    map.set(key, cur)
   }
+  return [...map.entries()]
+    .map(([key, v]) => ({ key, label: v.label, count: v.count }))
+    .sort((a, b) => b.count - a.count)
+}
 
-  return Object.entries(byMonth)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([month, stats]) => ({ month, ...stats }))
+// Son talepler (salt okunur): en son 8 talep/şikayet
+async function getRecentOrders(app: FastifyInstance, hotelId: string) {
+  const orders = await app.prisma.order.findMany({
+    where: { hotelId },
+    orderBy: { createdAt: 'desc' },
+    take: 8,
+    select: {
+      id: true,
+      roomNumber: true,
+      requestText: true,
+      urgency: true,
+      isComplaint: true,
+      isRequest: true,
+      createdAt: true,
+      department: { select: { name: true } },
+      departmentKey: true,
+    },
+  })
+  return orders.map((o) => ({
+    id: o.id,
+    room: o.roomNumber ?? '—',
+    text: o.requestText,
+    urgency: o.urgency,
+    isComplaint: o.isComplaint,
+    isRequest: o.isRequest,
+    department: o.department?.name ?? o.departmentKey ?? 'OTHER',
+    createdAt: o.createdAt,
+  }))
 }
 
 async function getUnmatchedCount(app: FastifyInstance, hotelId: string) {
@@ -199,6 +223,3 @@ async function getUnmatchedCount(app: FastifyInstance, hotelId: string) {
     where: { hotelId, guestId: null, status: { not: 'ARCHIVED' } },
   })
 }
-
-// Need dayjs imported at module level
-import dayjs from 'dayjs'
