@@ -272,16 +272,34 @@ export async function guestsRoutes(app: FastifyInstance) {
     },
   })
 
-  // DELETE /guests/:id — soft delete
+  // DELETE /guests/:id — TAM SİLME (hard delete)
+  // Misafir tamamen silinir; ona bağlı değerler boşa düşer:
+  //  - Refakatçiler (companions) cascade ile silinir
+  //  - Konuşmalar ve talepler/şikayetler silinmez ama guestId'leri boşalır
+  //    (konuşma "eşleşmemiş" olur, talep/şikayet kaydı misafirsiz kalır)
+  //  - Oda bağı misafirle birlikte tamamen kalkar
   app.delete<{ Params: { id: string } }>('/:id', {
-    schema: { tags: ['Guests'], summary: 'Soft-delete a guest' },
+    schema: { tags: ['Guests'], summary: 'Delete a guest permanently' },
     handler: async (request, reply) => {
+      const hotelId = request.user.hotelId
       const guest = await app.prisma.guest.findFirst({
-        where: { id: request.params.id, hotelId: request.user.hotelId },
+        where: { id: request.params.id, hotelId },
       })
       if (!guest) throw createError(404, 'Guest not found')
 
-      await app.prisma.guest.update({ where: { id: request.params.id }, data: { isActive: false } })
+      // Misafire bağlı kayıtların guestId'sini boşalt (FK engelini kaldır).
+      await app.prisma.conversation.updateMany({
+        where: { guestId: guest.id },
+        data: { guestId: null },
+      })
+      await app.prisma.order.updateMany({
+        where: { guestId: guest.id },
+        data: { guestId: null },
+      })
+
+      // Misafiri tamamen sil (refakatçiler cascade ile gider).
+      await app.prisma.guest.delete({ where: { id: guest.id } })
+
       return reply.send({ message: 'Guest removed' })
     },
   })
