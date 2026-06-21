@@ -144,6 +144,56 @@ Misafirin diline göre yanıt ver (Türkçe, İngilizce, Almanca, Rusça vb.).`,
   }
 
   console.log(`✅ Templates: ${templates.length} created`)
+
+  // ─────────────────────────────────────────
+  // DEPARTMENTS (Order Taker - hazir 5 departman)
+  // ─────────────────────────────────────────
+  // Anahtar kelimeler AI eslestirme icin (virgulle ayrilmis).
+  // isCustom: false -> bunlar hazir sablon (manuel eklenen degil).
+  const departments = [
+    {
+      key: 'FRONT_DESK',
+      name: 'Ön Büro',
+      keywords: 'resepsiyon, check-in, check-out, fatura, anahtar, kart, oda kartı, rezervasyon, geç çıkış, erken giriş, kasa, döviz, para bozdurma, bilgi, tur, gezi, transfer, taksi, ulaşım, bilet, araç kiralama, şikayet, fatura sorunu, uyandırma',
+    },
+    {
+      key: 'HOUSEKEEPING',
+      name: 'Kat Hizmetleri',
+      keywords: 'temizlik, oda temizliği, havlu, çarşaf, nevresim, yastık, battaniye, sabun, şampuan, duş jeli, tuvalet kağıdı, çamaşır, ütü, minibar dolumu, minibar, terlik, bornoz, ekstra yatak, yatak',
+    },
+    {
+      key: 'TECHNICAL',
+      name: 'Teknik Servis',
+      keywords: 'arıza, bozuk, çalışmıyor, klima, ısıtma, kalorifer, elektrik, su yok, sıcak su, lamba, ampul, priz, televizyon, tv, wifi, internet, kapı, kilit, kombi, tıkalı, tıkanık, lavabo, klozet, sifon, perde, dolap, kumanda',
+    },
+    {
+      key: 'FB',
+      name: 'Yiyecek & İçecek',
+      keywords: 'yemek, içecek, room service, oda servisi, kahvaltı, öğle yemeği, akşam yemeği, restoran, bar, içki, su, sipariş, menü, açım, acıktım, kahve, çay, tatlı, meyve, sandviç, pizza, hamburger',
+    },
+    {
+      key: 'SECURITY',
+      name: 'Güvenlik',
+      keywords: 'güvenlik, kayıp, kayıp eşya, çalındı, hırsızlık, tehlike, acil, acil durum, yangın, kavga, gürültü, şüpheli, kasa açılmıyor, emniyet, yardım, tehdit',
+    },
+  ]
+
+  for (const dept of departments) {
+    await prisma.department.upsert({
+      where: { hotelId_key: { hotelId: hotel.id, key: dept.key } },
+      update: {}, // mevcut departmana dokunma (kullanici degistirmis olabilir)
+      create: {
+        hotelId: hotel.id,
+        key: dept.key,
+        name: dept.name,
+        keywords: dept.keywords,
+        isActive: true,
+        isCustom: false,
+      },
+    })
+  }
+
+  console.log(`✅ Departments: ${departments.length} created`)
   console.log('\n🎉 Seed complete!')
   console.log('\nLogin credentials:')
   console.log(`  Hotel ID: ${hotel.id}`)
