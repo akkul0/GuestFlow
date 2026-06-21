@@ -427,6 +427,47 @@ The text to translate is provided between triple backticks. Translate ONLY what 
    * olup olmadığını belirler. Her dilde çalışır.
    * Selamlaşma, teşekkür, sohbet, soru-cevap gibi mesajları ELER.
    */
+  /**
+   * Mesajı iki boyutta değerlendirir (TEK AI çağrısı):
+   * - isRequest: Personelin AKSİYON alması gereken bir iş talebi mi (havlu, tamir, oda servisi)
+   * - isComplaint: Bir memnuniyetsizlik/şikayet mi (kötü yemek, kaba personel, bozuk klima)
+   * "Klimam çalışmıyor" → ikisi de true. "Havlu lazım" → sadece isRequest. "Personel kaba" → sadece isComplaint.
+   * Her dilde çalışır.
+   */
+  async analyzeMessage(text: string): Promise<{ isRequest: boolean; isComplaint: boolean }> {
+    if (!text || text.trim().length === 0) return { isRequest: false, isComplaint: false }
+    try {
+      const res = await this.client.messages.create({
+        model: FAST_MODEL,
+        max_tokens: 20,
+        system: `Sen bir otel mesaj analizcisisin. Misafirin mesajını İKİ boyutta değerlendir:
+
+1. "request": Personelin fiziksel AKSİYON alması gereken bir İŞ TALEBİ mi? (havlu getir, klima tamir et, oda temizle, oda servisi, eksik eşya, tamir vb.)
+2. "complaint": Bir MEMNUNİYETSİZLİK / ŞİKAYET mi? (kötü yemek, kaba personel, kirli oda, gürültü, bozuk eşya, kötü deneyim vb.)
+
+ÖNEMLİ örnekler:
+- "Havlu lazım" → request:true, complaint:false (sadece istek)
+- "Klimam çalışmıyor" → request:true, complaint:true (hem tamir gerek hem şikayet)
+- "Personel çok kabaydı" → request:false, complaint:true (sadece şikayet, fiziksel iş yok)
+- "Yemek soğuktu" → request:false, complaint:true
+- "Merhaba" / "Teşekkürler" / "Saat kaçta açık?" → request:false, complaint:false
+
+SADECE şu formatta JSON döndür (başka hiçbir şey yazma):
+{"request": true/false, "complaint": true/false}`,
+        messages: [{ role: 'user', content: text }],
+      })
+      const block = res.content[0]
+      const raw = block?.type === 'text' ? block.text.replace(/```json|```/g, '').trim() : '{}'
+      const parsed = JSON.parse(raw)
+      return {
+        isRequest: parsed.request === true,
+        isComplaint: parsed.complaint === true,
+      }
+    } catch {
+      return { isRequest: false, isComplaint: false }
+    }
+  }
+
   async isServiceRequest(text: string): Promise<boolean> {
     try {
       const res = await this.client.messages.create({
