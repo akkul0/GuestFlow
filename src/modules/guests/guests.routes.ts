@@ -16,7 +16,7 @@ const guestSchema = z.object({
   isVip: z.boolean().default(false),
   notes: z.string().optional(),
   roomId: z.string().uuid().optional(),
-  roomNumber: z.string().optional(),
+  roomNumber: z.string().optional(), // form oda NUMARASI gönderir; backend roomId'ye çevirir
   checkInDate: z.string().optional(),
   checkOutDate: z.string().optional(),
   reservationNo: z.string().optional(),
@@ -117,21 +117,26 @@ export async function guestsRoutes(app: FastifyInstance) {
         throw createError(409, 'A guest with this phone number already exists')
       }
 
-      // roomNumber verildiyse, o numaralı odayı bul ve roomId'ye çevir
+      // Oda NUMARASI verildiyse, o numaralı odayı bul (yoksa oluştur) ve roomId'ye çevir.
+      const { roomNumber, ...rest } = request.body
       let roomId = request.body.roomId
-      if (!roomId && request.body.roomNumber) {
-        const room = await app.prisma.room.findFirst({
-          where: { hotelId: request.user.hotelId, number: request.body.roomNumber.trim() },
+      if (!roomId && roomNumber && roomNumber.trim()) {
+        const roomNo = roomNumber.trim()
+        let room = await app.prisma.room.findFirst({
+          where: { hotelId: request.user.hotelId, number: roomNo },
         })
-        if (room) roomId = room.id
+        if (!room) {
+          // Oda kayıtlı değilse otomatik oluştur (otel oda listesi eksik olabilir)
+          room = await app.prisma.room.create({
+            data: { hotelId: request.user.hotelId, number: roomNo },
+          })
+        }
+        roomId = room.id
       }
-
-      // roomNumber alanını body'den çıkar (Prisma'da böyle bir alan yok)
-      const { roomNumber: _rn, ...guestData } = request.body
 
       const guest = await app.prisma.guest.create({
         data: {
-          ...guestData,
+          ...rest,
           roomId,
           phone,
           hotelId: request.user.hotelId,
@@ -155,10 +160,27 @@ export async function guestsRoutes(app: FastifyInstance) {
       })
       if (!guest) throw createError(404, 'Guest not found')
 
+      // Oda NUMARASI verildiyse roomId'ye çevir (yoksa oluştur).
+      const { roomNumber: putRoomNo, ...putRest } = request.body
+      let putRoomId = request.body.roomId
+      if (!putRoomId && putRoomNo && putRoomNo.trim()) {
+        const roomNo = putRoomNo.trim()
+        let room = await app.prisma.room.findFirst({
+          where: { hotelId: request.user.hotelId, number: roomNo },
+        })
+        if (!room) {
+          room = await app.prisma.room.create({
+            data: { hotelId: request.user.hotelId, number: roomNo },
+          })
+        }
+        putRoomId = room.id
+      }
+
       const updated = await app.prisma.guest.update({
         where: { id: request.params.id },
         data: {
-          ...request.body,
+          ...putRest,
+          ...(putRoomId ? { roomId: putRoomId } : {}),
           birthDate: request.body.birthDate ? new Date(request.body.birthDate) : undefined,
           checkInDate: request.body.checkInDate ? new Date(request.body.checkInDate) : undefined,
           checkOutDate: request.body.checkOutDate ? new Date(request.body.checkOutDate) : undefined,
