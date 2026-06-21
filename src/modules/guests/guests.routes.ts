@@ -120,7 +120,7 @@ export async function guestsRoutes(app: FastifyInstance) {
       }
 
       // Oda NUMARASI verildiyse, o numaralı odayı bul (yoksa oluştur) ve roomId'ye çevir.
-      const { roomNumber, ...rest } = request.body
+      const { roomNumber } = request.body
       let roomId = request.body.roomId
       if (!roomId && roomNumber && roomNumber.trim()) {
         const roomNo = roomNumber.trim()
