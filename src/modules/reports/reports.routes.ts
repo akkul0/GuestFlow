@@ -206,8 +206,9 @@ export async function reportsRoutes(app: FastifyInstance) {
         app.prisma.order.findMany({
           where: { hotelId, createdAt: { gte: start, lte: end } },
           select: {
+            id: true,
             departmentKey: true, urgency: true, requestText: true, roomNumber: true,
-            isComplaint: true, createdAt: true,
+            isComplaint: true, createdAt: true, deletedAt: true,
             department: { select: { name: true } },
           },
           orderBy: { createdAt: 'desc' },
@@ -287,8 +288,12 @@ export async function reportsRoutes(app: FastifyInstance) {
       // ── Şikayetler (isComplaint=true) ──
       const urgencyText: Record<string, string> = { HIGH: 'Yüksek', MEDIUM: 'Orta', LOW: 'Düşük' }
       const complaints = orders
-        .filter((o) => o.isComplaint)
+        // Silinen (deletedAt dolu) şikayetler EKRANDAN gizlenir.
+        // Not: departman dağılımı ve özet sayıları yukarıda TÜM kayıtları
+        // sayar (silinenler dahil) — yani raporun rakamları değişmez.
+        .filter((o) => o.isComplaint && !o.deletedAt)
         .map((o) => ({
+          id: o.id,
           room: o.roomNumber ?? 'Bilinmiyor',
           text: o.requestText,
           urgency: urgencyText[o.urgency] ?? 'Orta',
