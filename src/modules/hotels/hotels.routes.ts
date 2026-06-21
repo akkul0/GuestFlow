@@ -75,6 +75,8 @@ export async function hotelsRoutes(app: FastifyInstance) {
         select: {
           id: true, username: true, email: true, firstName: true, lastName: true,
           role: true, language: true, isActive: true, lastLoginAt: true, createdAt: true,
+          whatsappPhone: true, departmentId: true,
+          department: { select: { id: true, name: true } },
         },
         orderBy: { createdAt: 'asc' },
       })
@@ -114,6 +116,8 @@ export async function hotelsRoutes(app: FastifyInstance) {
         },
         select: {
           id: true, username: true, email: true, firstName: true, lastName: true, role: true, createdAt: true,
+          whatsappPhone: true, departmentId: true,
+          department: { select: { id: true, name: true } },
         },
       })
 
@@ -145,7 +149,11 @@ export async function hotelsRoutes(app: FastifyInstance) {
           ...(request.body.whatsappPhone !== undefined && { whatsappPhone: request.body.whatsappPhone ? normalizePhone(request.body.whatsappPhone) : null }),
           ...(request.body.departmentId !== undefined && { departmentId: request.body.departmentId }),
         },
-        select: { id: true, username: true, email: true, firstName: true, lastName: true, role: true, isActive: true },
+        select: {
+          id: true, username: true, email: true, firstName: true, lastName: true, role: true, isActive: true,
+          whatsappPhone: true, departmentId: true,
+          department: { select: { id: true, name: true } },
+        },
       })
 
       return reply.send(updated)
