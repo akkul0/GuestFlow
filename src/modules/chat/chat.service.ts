@@ -521,7 +521,7 @@ export class ChatService {
     conversation: any,
     requestText: string,
     roomNo: string,
-  ): Promise<{ departmentKey: string; departmentName: string; urgency: string } | null> {
+  ): Promise<{ departmentId: string | null; departmentKey: string; departmentName: string; urgency: string } | null> {
     const hotelId = conversation.hotelId
 
     // Otelin aktif departmanlarını al
@@ -562,13 +562,14 @@ export class ChatService {
     )
 
     return {
+      departmentId: matched?.id ?? null,
       departmentKey: matched?.key ?? 'OTHER',
       departmentName: matched?.name ?? 'Belirsiz',
       urgency,
     }
   }
 
-  private async notifyOrderTaker(conversation: any, guestMessage: string, roomNo?: string, mediaUrl?: string, savedOrder?: { departmentKey: string; departmentName: string; urgency: string } | null) {
+  private async notifyOrderTaker(conversation: any, guestMessage: string, roomNo?: string, mediaUrl?: string, savedOrder?: { departmentId: string | null; departmentKey: string; departmentName: string; urgency: string } | null) {
     try {
       const ORDER_TAKER_PHONE = (process.env.ORDER_TAKER_PHONE ?? '+905514072515').replace('+', '')
       const { hotel, guest } = conversation
@@ -600,58 +601,146 @@ export class ChatService {
         `⏰ Saat: ${time}`
 
       const apiVersion = process.env.WA_API_VERSION ?? 'v21.0'
-      const res = await fetch(
-        `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            messaging_product: 'whatsapp',
-            to: ORDER_TAKER_PHONE,
-            type: 'text',
-            text: { body: msg },
-          }),
-        }
-      )
 
-      const metaResponse = await res.json().catch(() => ({}))
+      // ── Alıcıları topla ──────────────────────────────────
+      // 1) Talebin departmanında ŞU AN vardiyada olan çalışanların telefonları
+      // 2) + Eski Order Taker numarası (test/yedek - ileride kaldırılabilir)
+      const recipients = new Set<string>()
 
-      if (res.ok && (metaResponse as any).messages) {
-        this.app.log.info(
-          { resolvedRoom, guestName, category: category.category, to: ORDER_TAKER_PHONE, metaResponse },
-          'Order taker notified - Meta accepted'
-        )
-
-        if (mediaUrl) {
-          await fetch(
-            `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`,
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${accessToken}`,
-              },
-              body: JSON.stringify({
-                messaging_product: 'whatsapp',
-                to: ORDER_TAKER_PHONE,
-                type: 'image',
-                image: { link: mediaUrl },
-              }),
+      if (savedOrder?.departmentId) {
+        try {
+          const onShift = await this.getOnShiftForNotify(hotel.id, savedOrder.departmentId)
+          for (const u of onShift) {
+            if (u.whatsappPhone) {
+              const clean = u.whatsappPhone.replace(/[\s\-()]/g, '').replace(/^\+/, '')
+              if (clean.length >= 10) recipients.add(clean)
             }
-          ).catch(() => {})
+          }
+        } catch (err) {
+          this.app.log.error({ err }, 'Vardiya alıcıları alınamadı')
         }
-      } else {
-        this.app.log.error(
-          { to: ORDER_TAKER_PHONE, status: res.status, metaResponse },
-          'Order taker WhatsApp FAILED - Meta rejected'
-        )
       }
+
+      // Eski Order Taker numarası (yedek)
+      if (ORDER_TAKER_PHONE && ORDER_TAKER_PHONE.length >= 10) {
+        recipients.add(ORDER_TAKER_PHONE)
+      }
+
+      if (recipients.size === 0) {
+        this.app.log.warn({ resolvedRoom, department: savedOrder?.departmentName }, 'Bildirim için alıcı yok (vardiyada kimse yok + Order Taker numarası tanımsız)')
+        return
+      }
+
+      // ── Her alıcıya gönder ───────────────────────────────
+      const sendTo = async (to: string) => {
+        const res = await fetch(
+          `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              messaging_product: 'whatsapp',
+              to,
+              type: 'text',
+              text: { body: msg },
+            }),
+          }
+        )
+        const metaResponse = await res.json().catch(() => ({}))
+        if (res.ok && (metaResponse as any).messages) {
+          this.app.log.info({ to, resolvedRoom, department: savedOrder?.departmentName }, 'Bildirim gönderildi - Meta kabul etti')
+          // Görsel varsa ayrıca gönder
+          if (mediaUrl) {
+            await fetch(
+              `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${accessToken}`,
+                },
+                body: JSON.stringify({
+                  messaging_product: 'whatsapp',
+                  to,
+                  type: 'image',
+                  image: { link: mediaUrl },
+                }),
+              }
+            ).catch(() => {})
+          }
+        } else {
+          this.app.log.error({ to, status: res.status, metaResponse }, 'Bildirim BAŞARISIZ - Meta reddetti')
+        }
+      }
+
+      // Tüm alıcılara paralel gönder
+      await Promise.all([...recipients].map((to) => sendTo(to).catch((e) => {
+        this.app.log.error({ to, err: e }, 'Bildirim gönderme hatası')
+      })))
+
     } catch (err) {
       this.app.log.error({ err }, 'notifyOrderTaker error')
     }
+  }
+
+  /**
+   * notifyOrderTaker için: departmanda şu an vardiyada olan çalışanları döndürür.
+   * (orders modülündeki getOnShiftUsers ile aynı mantık, burada tekrar.)
+   */
+  private async getOnShiftForNotify(
+    hotelId: string,
+    departmentId: string,
+  ): Promise<{ id: string; firstName: string; lastName: string; whatsappPhone: string | null }[]> {
+    const at = new Date()
+    const TZ_OFFSET_MIN = 3 * 60 // Europe/Istanbul = UTC+3
+    const local = new Date(at.getTime() + TZ_OFFSET_MIN * 60 * 1000)
+    const minutesNow = local.getUTCHours() * 60 + local.getUTCMinutes()
+
+    const todayStr = local.toISOString().slice(0, 10)
+    const today = new Date(todayStr + 'T00:00:00.000Z')
+    const yesterday = new Date(today)
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1)
+
+    const shifts = await this.app.prisma.shift.findMany({
+      where: { hotelId, departmentId, isActive: true },
+    })
+
+    const todayShiftIds: string[] = []
+    const yesterdayShiftIds: string[] = []
+    for (const s of shifts) {
+      const overnight = s.endMinutes <= s.startMinutes
+      if (!overnight) {
+        if (minutesNow >= s.startMinutes && minutesNow < s.endMinutes) todayShiftIds.push(s.id)
+      } else {
+        if (minutesNow >= s.startMinutes) todayShiftIds.push(s.id)
+        if (minutesNow < s.endMinutes) yesterdayShiftIds.push(s.id)
+      }
+    }
+
+    const userIds = new Set<string>()
+    if (todayShiftIds.length > 0) {
+      const a = await this.app.prisma.shiftAssignment.findMany({
+        where: { hotelId, departmentId, date: today, status: 'SCHEDULED', shiftId: { in: todayShiftIds } },
+        select: { userId: true },
+      })
+      a.forEach((x) => userIds.add(x.userId))
+    }
+    if (yesterdayShiftIds.length > 0) {
+      const a = await this.app.prisma.shiftAssignment.findMany({
+        where: { hotelId, departmentId, date: yesterday, status: 'SCHEDULED', shiftId: { in: yesterdayShiftIds } },
+        select: { userId: true },
+      })
+      a.forEach((x) => userIds.add(x.userId))
+    }
+
+    if (userIds.size === 0) return []
+    return this.app.prisma.user.findMany({
+      where: { id: { in: [...userIds] }, hotelId, isActive: true },
+      select: { id: true, firstName: true, lastName: true, whatsappPhone: true },
+    })
   }
 
   private async sendAutoAiReply(conversation: Parameters<AiService['generateReply']>[0], text: string) {
