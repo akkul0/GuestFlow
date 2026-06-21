@@ -306,6 +306,43 @@ export class ChatService {
     return { suggestion }
   }
 
+  // Metindeki yazım/dilbilgisi hatalarını AI ile düzeltir.
+  async correctText(text: string): Promise<string> {
+    return this.aiService.correctText(text)
+  }
+
+  // Taslağı daha kibar/profesyonel hale getirir (AI).
+  async enrichText(text: string): Promise<string> {
+    return this.aiService.enrichText(text)
+  }
+
+  // Konuşmanın eşleşmiş misafirinin notunu getirir.
+  async getGuestNotes(hotelId: string, conversationId: string): Promise<string> {
+    const conv = await this.app.prisma.conversation.findFirst({
+      where: { id: conversationId, hotelId },
+      include: { guest: { select: { notes: true } } },
+    })
+    if (!conv) throw createError(404, 'Konuşma bulunamadı')
+    return conv.guest?.notes ?? ''
+  }
+
+  // Konuşmanın eşleşmiş misafirine not kaydeder.
+  async saveGuestNotes(hotelId: string, conversationId: string, notes: string) {
+    const conv = await this.app.prisma.conversation.findFirst({
+      where: { id: conversationId, hotelId },
+      select: { id: true, guestId: true },
+    })
+    if (!conv) throw createError(404, 'Konuşma bulunamadı')
+    if (!conv.guestId) {
+      throw createError(400, 'Bu konuşma bir misafire bağlı değil, not kaydedilemez')
+    }
+    await this.app.prisma.guest.update({
+      where: { id: conv.guestId },
+      data: { notes },
+    })
+    return { message: 'Not kaydedildi', notes }
+  }
+
   async getUnmatchedConversations(hotelId: string) {
     const conversations = await this.app.prisma.conversation.findMany({
       where: { hotelId, guestId: null, status: { not: ConversationStatus.ARCHIVED } },
@@ -427,31 +464,33 @@ export class ChatService {
       },
     })
 
-    // Auto-respond with AI if enabled
-    if (conversation.isAiEnabled && conversation.hotel.aiEnabled) {
-      const fullConversation = await this.app.prisma.conversation.findUnique({
-        where: { id: conversation.id },
-        include: {
-          hotel: true,
-          guest: true,
-          messages: { orderBy: { createdAt: 'desc' }, take: 10 },
-        },
-      })
+    // Konuşmanın tam halini al (hem AI yanıtı hem talep/şikayet için lazım)
+    const fullConversation = await this.app.prisma.conversation.findUnique({
+      where: { id: conversation.id },
+      include: {
+        hotel: true,
+        guest: true,
+        messages: { orderBy: { createdAt: 'desc' }, take: 10 },
+      },
+    })
 
-      if (fullConversation) {
+    if (fullConversation) {
+      // 1) AI YANITI — sadece AI açıksa otomatik cevap ver
+      if (conversation.isAiEnabled && conversation.hotel.aiEnabled) {
         const aiReply = await this.aiService.generateReply(fullConversation)
         if (aiReply) {
           await this.sendAutoAiReply(fullConversation, aiReply)
         }
+      }
 
-        // Order Taker'a bildirim - sadece son mesaj talepse.
-        // ÇEVRİLMİŞ Türkçe metni gönderiyoruz (inboundBody) ki yabancı dildeki
-        // talepler de doğru tespit edilsin. Orijinal yoksa inboundBody = data.body.
-        if ((data.body && data.body.trim().length > 0) || data.mediaUrl) {
-          await this.checkAndNotifyOrderTaker(fullConversation, inboundBody ?? data.body ?? '', data.mediaUrl).catch((err) => {
-            this.app.log.error({ err }, 'Order taker notification failed')
-          })
-        }
+      // 2) TALEP / ŞİKAYET ALGILAMA — AI açık OLMASA DA her zaman çalışır.
+      // (Misafir istekleri ve şikayetleri otomatik kaydedilir/iletilir.)
+      // ÇEVRİLMİŞ Türkçe metni gönderiyoruz (inboundBody) ki yabancı dildeki
+      // talepler de doğru tespit edilsin. Orijinal yoksa inboundBody = data.body.
+      if ((data.body && data.body.trim().length > 0) || data.mediaUrl) {
+        await this.checkAndNotifyOrderTaker(fullConversation, inboundBody ?? data.body ?? '', data.mediaUrl).catch((err) => {
+          this.app.log.error({ err }, 'Order taker notification failed')
+        })
       }
     }
 

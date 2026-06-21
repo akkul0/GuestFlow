@@ -110,18 +110,6 @@ export async function chatRoutes(app: FastifyInstance) {
     },
   )
 
-  // DELETE /chat/conversations/:id — konuşmayı sil
-  app.delete<{ Params: { id: string } }>('/conversations/:id', {
-    schema: { tags: ['Chat'], summary: 'Delete a conversation' },
-    handler: async (request, reply) => {
-      const result = await chatService.deleteConversation(
-        request.user.hotelId,
-        request.params.id,
-      )
-      return reply.send(result)
-    },
-  })
-
   // POST /chat/conversations/:id/read
   app.post<{ Params: { id: string } }>('/conversations/:id/read', {
     schema: { tags: ['Chat'], summary: 'Mark conversation as read' },
@@ -136,6 +124,50 @@ export async function chatRoutes(app: FastifyInstance) {
     schema: { tags: ['Chat'], summary: 'Get AI-generated reply suggestion' },
     handler: async (request, reply) => {
       const result = await chatService.getAiSuggestion(request.user.hotelId, request.params.id)
+      return reply.send(result)
+    },
+  })
+
+  // POST /chat/correct-text — metindeki yazım hatalarını AI ile düzelt
+  app.post<{ Body: { text: string } }>('/correct-text', {
+    schema: { tags: ['Chat'], summary: 'Correct spelling/grammar of a draft' },
+    handler: async (request, reply) => {
+      const text = request.body?.text ?? ''
+      if (!text.trim()) return reply.send({ text: '' })
+      const corrected = await chatService.correctText(text)
+      return reply.send({ text: corrected })
+    },
+  })
+
+  // POST /chat/enrich-text — taslağı AI ile kibarlaştır/zenginleştir
+  app.post<{ Body: { text: string } }>('/enrich-text', {
+    schema: { tags: ['Chat'], summary: 'Enrich a draft to be more polite/professional' },
+    handler: async (request, reply) => {
+      const text = request.body?.text ?? ''
+      if (!text.trim()) return reply.send({ text: '' })
+      const enriched = await chatService.enrichText(text)
+      return reply.send({ text: enriched })
+    },
+  })
+
+  // GET /chat/conversations/:id/notes — misafir notunu getir
+  app.get<{ Params: { id: string } }>('/conversations/:id/notes', {
+    schema: { tags: ['Chat'], summary: 'Get guest notes for a conversation' },
+    handler: async (request, reply) => {
+      const notes = await chatService.getGuestNotes(request.user.hotelId, request.params.id)
+      return reply.send({ notes })
+    },
+  })
+
+  // PUT /chat/conversations/:id/notes — misafir notunu kaydet
+  app.put<{ Params: { id: string }; Body: { notes: string } }>('/conversations/:id/notes', {
+    schema: { tags: ['Chat'], summary: 'Save guest notes for a conversation' },
+    handler: async (request, reply) => {
+      const result = await chatService.saveGuestNotes(
+        request.user.hotelId,
+        request.params.id,
+        request.body?.notes ?? '',
+      )
       return reply.send(result)
     },
   })
