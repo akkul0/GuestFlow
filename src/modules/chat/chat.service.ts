@@ -507,12 +507,15 @@ export class ChatService {
   private async checkAndNotifyOrderTaker(conversation: any, latestMessage: string, latestMediaUrl?: string) {
     const messages = conversation.messages ?? []
 
-    // SADECE son mesaj bir talepse VEYA fotoğraf eklendiyse işlem yap.
-    // Eski talepleri tekrar tetikleme!
-    const lastIsRequest = await this.isServiceRequest(latestMessage)
+    // Mesajı İKİ boyutta değerlendir: iş talebi mi + şikayet mi.
     const hasMedia = !!latestMediaUrl
+    const analysis = await this.aiService.analyzeMessage(latestMessage)
+    // Medya varsa (fotoğraf) iş talebi say (bozuk eşya fotoğrafı gibi).
+    const isRequest = analysis.isRequest || hasMedia
+    const isComplaint = analysis.isComplaint
 
-    if (!lastIsRequest && !hasMedia) return
+    // İkisi de değilse (selamlaşma, sohbet) → hiçbir şey yapma.
+    if (!isRequest && !isComplaint) return
 
     // Oda numarasini bul: once son mesajda, yoksa konusma gecmisinde
     let roomNo: string | null = this.extractRoomNumber(latestMessage)
@@ -523,22 +526,38 @@ export class ChatService {
       }
     }
 
-    // Oda numarasi yoksa işlem yapma (AI misafirden oda no isteyecek)
-    if (!roomNo) return
+    // Oda no SADECE iş talebi için zorunlu (Order Taker'a iş düşecek, oda lazım).
+    // Saf şikayette oda no olmasa da devam et (MGB'de oda "Bilinmiyor" görünür).
+    // İstek var ama oda yoksa: AI misafirden oda no isteyecek, şimdilik çık.
+    if (isRequest && !roomNo) {
+      // Yine de SADECE şikayet boyutu varsa onu kaydet (oda no'suz).
+      if (isComplaint) {
+        await this.saveOrderFromMessage(
+          conversation, latestMessage, null, false, true,
+        ).catch((err) => this.app.log.error({ err }, 'Şikayet kaydı başarısız'))
+      }
+      return
+    }
 
     // ── Departmana eşleştir + Order olarak KAYDET ──────────────
-    // (bildirimden once kaydet, boylece Order Taker sayfasinda gorunsun)
+    // İstek VEYA şikayet ise kaydedilir. Bayraklar (isRequest/isComplaint) ile
+    // Order Taker (iş) ve MGB (şikayet) ayrı ayrı filtreleyebilir.
     const savedOrder = await this.saveOrderFromMessage(
       conversation,
       latestMessage,
       roomNo,
+      isRequest,
+      isComplaint,
     ).catch((err) => {
       this.app.log.error({ err }, 'Order kaydi basarisiz')
       return null
     })
 
-    // Her zaman SON mesaji gonder (eski talebi degil)
-    await this.notifyOrderTaker(conversation, latestMessage, roomNo, latestMediaUrl, savedOrder)
+    // Order Taker'a bildirim SADECE iş talebi varsa VE oda no varsa gider.
+    // (Saf şikayet → sadece MGB'de görünür, Order Taker'a iş düşmez.)
+    if (isRequest && roomNo) {
+      await this.notifyOrderTaker(conversation, latestMessage, roomNo, latestMediaUrl, savedOrder)
+    }
   }
 
   /**
@@ -548,7 +567,9 @@ export class ChatService {
   private async saveOrderFromMessage(
     conversation: any,
     requestText: string,
-    roomNo: string,
+    roomNo: string | null,
+    isRequest: boolean,
+    isComplaint: boolean,
   ): Promise<{ departmentId: string | null; departmentKey: string; departmentName: string; urgency: string } | null> {
     const hotelId = conversation.hotelId
 
@@ -578,9 +599,11 @@ export class ChatService {
         category: cat.category ?? 'OTHER',
         urgency,
         requestText,
-        roomNumber: roomNo,
+        roomNumber: roomNo ?? null,
         status: 'OPEN',
         source: 'WHATSAPP',
+        isRequest,
+        isComplaint,
       },
     })
 
