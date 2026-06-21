@@ -407,10 +407,14 @@ model Order {
   status        OrderStatus   @default(OPEN)
   source        OrderSource   @default(WHATSAPP) // otomatik mi elle mi
   note          String?       @db.Text
+  // İki boyut: iş talebi mi (Order Taker'a düşer) + şikayet mi (MGB'de görünür)
+  isRequest     Boolean       @default(true)  // fiziksel/iş talebi mi (havlu, tamir)
+  isComplaint   Boolean       @default(false) // memnuniyetsizlik/şikayet mi (MGB)
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
   @@index([hotelId, status])
+  @@index([hotelId, isComplaint])
   @@map("orders")
 }
 
