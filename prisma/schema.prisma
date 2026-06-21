@@ -194,6 +194,7 @@ model Conversation {
   unreadCount Int                @default(0)
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
+  deletedAt   DateTime?
 
   messages    Message[]
   tags        ConversationTag[]
@@ -411,6 +412,7 @@ model Order {
   isRequest     Boolean       @default(true)  // fiziksel/iş talebi mi (havlu, tamir)
   isComplaint   Boolean       @default(false) // memnuniyetsizlik/şikayet mi (MGB)
   createdAt     DateTime      @default(now())
+  deletedAt     DateTime?
   updatedAt     DateTime      @updatedAt
 
   @@index([hotelId, status])
