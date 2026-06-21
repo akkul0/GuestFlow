@@ -110,6 +110,18 @@ export async function chatRoutes(app: FastifyInstance) {
     },
   )
 
+  // DELETE /chat/conversations/:id — konuşmayı sil
+  app.delete<{ Params: { id: string } }>('/conversations/:id', {
+    schema: { tags: ['Chat'], summary: 'Delete a conversation' },
+    handler: async (request, reply) => {
+      const result = await chatService.deleteConversation(
+        request.user.hotelId,
+        request.params.id,
+      )
+      return reply.send(result)
+    },
+  })
+
   // POST /chat/conversations/:id/read
   app.post<{ Params: { id: string } }>('/conversations/:id/read', {
     schema: { tags: ['Chat'], summary: 'Mark conversation as read' },

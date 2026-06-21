@@ -121,6 +121,18 @@ export class ChatService {
     return { items: items.reverse(), hasMore, nextCursor }
   }
 
+  async deleteConversation(hotelId: string, conversationId: string) {
+    // Konuşma bu otele mi ait?
+    const conv = await this.app.prisma.conversation.findFirst({
+      where: { id: conversationId, hotelId },
+    })
+    if (!conv) throw createError(404, 'Konuşma bulunamadı')
+
+    // Mesajlar ve etiketler cascade ile silinir (şemada onDelete: Cascade).
+    await this.app.prisma.conversation.delete({ where: { id: conversationId } })
+    return { message: 'Konuşma silindi' }
+  }
+
   async createConversation(hotelId: string, guestId: string) {
     // Misafiri bul
     const guest = await this.app.prisma.guest.findFirst({
