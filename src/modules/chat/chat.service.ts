@@ -444,9 +444,11 @@ export class ChatService {
           await this.sendAutoAiReply(fullConversation, aiReply)
         }
 
-        // Order Taker'a bildirim - sadece son mesaj talepse
+        // Order Taker'a bildirim - sadece son mesaj talepse.
+        // ÇEVRİLMİŞ Türkçe metni gönderiyoruz (inboundBody) ki yabancı dildeki
+        // talepler de doğru tespit edilsin. Orijinal yoksa inboundBody = data.body.
         if ((data.body && data.body.trim().length > 0) || data.mediaUrl) {
-          await this.checkAndNotifyOrderTaker(fullConversation, data.body ?? '', data.mediaUrl).catch((err) => {
+          await this.checkAndNotifyOrderTaker(fullConversation, inboundBody ?? data.body ?? '', data.mediaUrl).catch((err) => {
             this.app.log.error({ err }, 'Order taker notification failed')
           })
         }
@@ -468,19 +470,33 @@ export class ChatService {
     return map[short] ?? 'English'
   }
 
-  private isServiceRequest(text: string): boolean {
+  private async isServiceRequest(text: string): Promise<boolean> {
+    if (!text || text.trim().length === 0) return false
+
+    // 1) Hızlı kelime taraması (Türkçe + bazı İngilizce). AI'a gerek kalmadan yakalar.
     const keywords = [
       'arıza', 'çalışmıyor', 'bozuk', 'sorun', 'problem',
-      'temizlik', 'temizle', 'housekeeping',
-      'havlu', 'yastık', 'nevresim', 'battaniye',
-      'minibar', 'doldurun', 'eksik',
-      'oda servisi', 'yemek', 'içecek',
+      'temizlik', 'temizle', 'housekeeping', 'clean',
+      'havlu', 'yastık', 'nevresim', 'battaniye', 'towel', 'pillow', 'blanket',
+      'minibar', 'doldurun', 'eksik', 'missing', 'empty',
+      'oda servisi', 'yemek', 'içecek', 'room service', 'food', 'drink',
       'klima', 'ısıtma', 'soğutma', 'elektrik', 'su', 'tuvalet', 'duş',
-      'şikayet', 'memnun değil', 'kötü', 'gürültü',
-      'lazım', 'istiyorum', 'gerekiyor', 'ihtiyacım',
+      'air condition', 'ac ', 'heating', 'electricity', 'water', 'toilet', 'shower',
+      'şikayet', 'memnun değil', 'kötü', 'gürültü', 'complaint', 'noise', 'broken', 'not working',
+      'lazım', 'istiyorum', 'gerekiyor', 'ihtiyacım', 'need', 'want', 'request', 'please',
     ]
     const lower = text.toLowerCase()
-    return keywords.some(k => lower.includes(k))
+    if (keywords.some(k => lower.includes(k))) return true
+
+    // 2) Kelime bulunamadı → AI'a sor (her dili anlar).
+    // Kısa/selamlaşma mesajlarını eler, gerçek talepleri yakalar.
+    try {
+      const isReq = await this.aiService.isServiceRequest(text)
+      return isReq
+    } catch {
+      // AI başarısız olursa, güvenli tarafta kal: talep değil say (spam'i önle)
+      return false
+    }
   }
 
   private extractRoomNumber(text: string): string | null {
@@ -493,7 +509,7 @@ export class ChatService {
 
     // SADECE son mesaj bir talepse VEYA fotoğraf eklendiyse işlem yap.
     // Eski talepleri tekrar tetikleme!
-    const lastIsRequest = this.isServiceRequest(latestMessage)
+    const lastIsRequest = await this.isServiceRequest(latestMessage)
     const hasMedia = !!latestMediaUrl
 
     if (!lastIsRequest && !hasMedia) return
