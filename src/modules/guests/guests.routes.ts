@@ -108,9 +108,11 @@ export async function guestsRoutes(app: FastifyInstance) {
       if (existing) {
         // Reactivate if archived
         if (!existing.isActive) {
+          // roomNumber Prisma alanı değil; çıkar (yoksa 500 verir)
+          const { roomNumber: _rn, birthDate: _bd, checkInDate: _ci, checkOutDate: _co, ...reactRest } = request.body
           const updated = await app.prisma.guest.update({
             where: { id: existing.id },
-            data: { ...request.body, phone, isActive: true },
+            data: { ...reactRest, phone, isActive: true },
           })
           return reply.status(200).send(updated)
         }
@@ -134,15 +136,26 @@ export async function guestsRoutes(app: FastifyInstance) {
         roomId = room.id
       }
 
+      const b = request.body
       const guest = await app.prisma.guest.create({
         data: {
-          ...rest,
-          roomId,
-          phone,
           hotelId: request.user.hotelId,
-          birthDate: request.body.birthDate ? new Date(request.body.birthDate) : undefined,
-          checkInDate: request.body.checkInDate ? new Date(request.body.checkInDate) : undefined,
-          checkOutDate: request.body.checkOutDate ? new Date(request.body.checkOutDate) : undefined,
+          firstName: b.firstName,
+          lastName: b.lastName,
+          phone,
+          language: b.language ?? 'tr',
+          isVip: b.isVip ?? false,
+          ...(roomId ? { roomId } : {}),
+          ...(b.email && b.email.trim() ? { email: b.email.trim() } : {}),
+          ...(b.nationality ? { nationality: b.nationality } : {}),
+          ...(b.agencyName ? { agencyName: b.agencyName } : {}),
+          ...(b.bookingSource ? { bookingSource: b.bookingSource } : {}),
+          ...(b.notes ? { notes: b.notes } : {}),
+          ...(b.reservationNo ? { reservationNo: b.reservationNo } : {}),
+          ...(b.externalId ? { externalId: b.externalId } : {}),
+          ...(b.birthDate ? { birthDate: new Date(b.birthDate) } : {}),
+          ...(b.checkInDate ? { checkInDate: new Date(b.checkInDate) } : {}),
+          ...(b.checkOutDate ? { checkOutDate: new Date(b.checkOutDate) } : {}),
         },
         include: { room: true, companions: true },
       })
@@ -161,7 +174,7 @@ export async function guestsRoutes(app: FastifyInstance) {
       if (!guest) throw createError(404, 'Guest not found')
 
       // Oda NUMARASI verildiyse roomId'ye çevir (yoksa oluştur).
-      const { roomNumber: putRoomNo, ...putRest } = request.body
+      const { roomNumber: putRoomNo, birthDate: _pbd, checkInDate: _pci, checkOutDate: _pco, ...putRest } = request.body
       let putRoomId = request.body.roomId
       if (!putRoomId && putRoomNo && putRoomNo.trim()) {
         const roomNo = putRoomNo.trim()
