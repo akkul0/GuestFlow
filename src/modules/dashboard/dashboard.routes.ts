@@ -31,7 +31,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
           getUnmatchedCount(app, hotelId),
           getDepartmentBreakdown(app, hotelId),
           getRecentOrders(app, hotelId),
-          app.prisma.order.count({ where: { hotelId, isRequest: true, status: { in: ['OPEN', 'ACKNOWLEDGED', 'IN_PROGRESS'] } } }),
+          app.prisma.order.count({ where: { hotelId, isRequest: true, deletedAt: null, status: { in: ['OPEN', 'ACKNOWLEDGED', 'IN_PROGRESS'] } } }),
           app.prisma.order.count({ where: { hotelId, isComplaint: true, createdAt: { gte: todayStart } } }),
         ])
 
@@ -191,7 +191,7 @@ async function getDepartmentBreakdown(app: FastifyInstance, hotelId: string) {
 // Son talepler (salt okunur): en son 8 talep/şikayet
 async function getRecentOrders(app: FastifyInstance, hotelId: string) {
   const orders = await app.prisma.order.findMany({
-    where: { hotelId },
+    where: { hotelId, deletedAt: null },
     orderBy: { createdAt: 'desc' },
     take: 8,
     select: {
