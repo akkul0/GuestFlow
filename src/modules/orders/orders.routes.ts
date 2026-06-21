@@ -306,10 +306,12 @@ export async function ordersRoutes(app: FastifyInstance) {
 
   // GET /orders — talepleri listele
   app.get<{ Querystring: { status?: string; departmentId?: string } }>('/', {
-    schema: { tags: ['Orders'], summary: 'List orders' },
+    schema: { tags: ['Orders'], summary: 'List orders (work requests only)' },
     handler: async (request, reply) => {
       const { status, departmentId } = request.query
-      const where: Record<string, unknown> = { hotelId: request.user.hotelId }
+      // Order Taker SADECE iş taleplerini görür. Saf şikayetler (isRequest=false)
+      // burada görünmez — onlar MGB raporundadır.
+      const where: Record<string, unknown> = { hotelId: request.user.hotelId, isRequest: true }
       if (status) where.status = status
       if (departmentId) where.departmentId = departmentId
 
