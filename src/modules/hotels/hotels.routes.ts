@@ -137,6 +137,27 @@ export async function hotelsRoutes(app: FastifyInstance) {
       return reply.send(updated)
     },
   })
+
+  // DELETE /hotels/:id/users/:userId — personeli sil
+  app.delete<{ Params: { id: string; userId: string } }>('/:id/users/:userId', {
+    schema: { tags: ['Hotels'], summary: 'Delete a hotel user' },
+    preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
+    handler: async (request, reply) => {
+      const user = await app.prisma.user.findFirst({
+        where: { id: request.params.userId, hotelId: request.params.id },
+      })
+      if (!user) throw createError(404, 'Personel bulunamadı')
+
+      // Kendini silmeyi engelle
+      if (user.id === request.user.sub) {
+        throw createError(400, 'Kendi hesabınızı silemezsiniz')
+      }
+
+      // Vardiya atamaları cascade ile silinir (şemada onDelete: Cascade).
+      await app.prisma.user.delete({ where: { id: user.id } })
+      return reply.send({ message: 'Personel silindi' })
+    },
+  })
 }
 
 // Prisma doesn't know id_2 — use a workaround for the settings endpoint
