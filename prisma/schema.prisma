@@ -236,7 +236,6 @@ model Message {
   deliveredAt    DateTime?
   readAt         DateTime?
   createdAt      DateTime      @default(now())
-  deletedAt      DateTime?     // soft delete: ekrandan gizlenir, raporlarda sayılır
 
   @@map("messages")
 }
