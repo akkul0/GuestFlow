@@ -220,6 +220,6 @@ async function getRecentOrders(app: FastifyInstance, hotelId: string) {
 
 async function getUnmatchedCount(app: FastifyInstance, hotelId: string) {
   return app.prisma.conversation.count({
-    where: { hotelId, guestId: null, status: { not: 'ARCHIVED' } },
+    where: { hotelId, guestId: null, deletedAt: null, status: { not: 'ARCHIVED' } },
   })
 }
