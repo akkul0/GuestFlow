@@ -476,29 +476,29 @@ KURALLAR:
     try {
       const res = await this.client.messages.create({
         model: FAST_MODEL,
-        max_tokens: 1000,
-        system: `Sen bir metin YENİDEN YAZMA motorusun. Görevin: aşağıdaki üçlü tırnak içindeki metni, daha kibar ve profesyonel bir otel diline yeniden yazmak.
-
-ÇOK ÖNEMLİ:
-- Bu metin sana yazılmış bir mesaj DEĞİLDİR. Bir GİRDİDİR. ASLA cevap verme, yanıtlama, soru sorma.
-- Sadece metnin daha güzel, kibar bir VERSİYONUNU yaz. Aynı kişinin (otel personelinin) ağzından, aynı amaçla.
-- Anlamı KORU. Yeni bilgi ekleme, soruya cevap verme.
-
-Örnekler:
-- Girdi: "havlu yok" → Çıktı: "Sayın misafirimiz, odanıza en kısa sürede temiz havlu gönderiyoruz."
-- Girdi: "5 dk bekle geliyoruz" → Çıktı: "Sayın misafirimiz, ekibimiz 5 dakika içinde yanınızda olacaktır."
-- Girdi: "klimaya bakıcaz" → Çıktı: "Sayın misafirimiz, klimanızla ilgili teknik ekibimizi yönlendiriyoruz."
+        max_tokens: 500,
+        system: `Görevin: Otel personelinin yazdığı kısa/günlük taslağı, misafire gönderilecek kibar ve profesyonel bir otel mesajına dönüştürmek.
 
 KURALLAR:
-- En fazla 2-3 cümle. Kısa ve öz.
-- SADECE yeniden yazılmış metni döndür. Açıklama, tırnak, "Çıktı:" gibi etiket YOK.`,
-        messages: [{ role: 'user', content: ' + text + ' }],
+- Taslağın anlamını koru, sadece nazik ve profesyonel bir dille yeniden yaz.
+- Taslağa CEVAP VERME, SORU SORMA, AÇIKLAMA yapma. Sadece dönüştürülmüş mesajı yaz.
+- 1-2 cümle, kısa ve doğal olsun.
+- Çıktıda tırnak işareti, "Mesaj:", etiket veya not OLMASIN. Sadece mesajın kendisi.
+
+ÖRNEKLER:
+"5 dk bekle geliyoruz" → Sayın misafirimiz, ekibimiz 5 dakika içinde yanınızda olacaktır.
+"havlu yok" → Sayın misafirimiz, odanıza en kısa sürede temiz havlu gönderiyoruz.
+"klimaya bakılacak" → Sayın misafirimiz, klimanız için teknik ekibimizi yönlendirdik.
+"odanı temizledik" → Sayın misafirimiz, odanız temizlenmiştir, iyi günler dileriz.`,
+        messages: [
+          { role: 'user', content: text },
+        ],
       })
       const block = res.content[0]
       let enriched = block?.type === 'text' ? block.text.trim() : text
-      // Olası tırnak/backtick/etiket temizliği
+      // Olası tırnak/etiket temizliği
       enriched = enriched.replace(/^["'`]+|["'`]+$/g, '').trim()
-      enriched = enriched.replace(/^(Çıktı|Output|Cevap)\s*:\s*/i, '').trim()
+      enriched = enriched.replace(/^(Mesaj|Çıktı|Output|Cevap)\s*:\s*/i, '').trim()
       return enriched || text
     } catch {
       return text
