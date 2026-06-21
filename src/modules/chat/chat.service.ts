@@ -155,7 +155,14 @@ export class ChatService {
       where: { hotelId, waContactId },
     })
     if (existing) {
-      // Varsa onu döndür (yeni oluşturma)
+      // Konuşma silinmişse dirilt + misafir bağını güncelle (listede görünsün).
+      if (existing.deletedAt || existing.guestId !== guest.id) {
+        return this.app.prisma.conversation.update({
+          where: { id: existing.id },
+          data: { deletedAt: null, guestId: guest.id },
+        })
+      }
+      // Aktifse olduğu gibi döndür.
       return existing
     }
 
@@ -298,7 +305,7 @@ export class ChatService {
       where: { id: conversationId, hotelId },
       include: {
         hotel: true,
-        guest: true,
+        guest: { include: { room: true } },  // room: AI öneri de oda no'yu bilsin
         messages: {
           orderBy: { createdAt: 'desc' },
           take: 10,
@@ -350,7 +357,7 @@ export class ChatService {
 
   async getUnmatchedConversations(hotelId: string) {
     const conversations = await this.app.prisma.conversation.findMany({
-      where: { hotelId, guestId: null, status: { not: ConversationStatus.ARCHIVED } },
+      where: { hotelId, guestId: null, deletedAt: null, status: { not: ConversationStatus.ARCHIVED } },
       orderBy: { lastMessageAt: 'desc' },
       include: {
         messages: {
@@ -481,7 +488,7 @@ export class ChatService {
       where: { id: conversation.id },
       include: {
         hotel: true,
-        guest: true,
+        guest: { include: { room: true } },  // room: AI misafirin oda no'sunu bilsin
         messages: { orderBy: { createdAt: 'desc' }, take: 10 },
       },
     })
