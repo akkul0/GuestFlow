@@ -311,7 +311,7 @@ export async function ordersRoutes(app: FastifyInstance) {
       const { status, departmentId } = request.query
       // Order Taker SADECE iş taleplerini görür. Saf şikayetler (isRequest=false)
       // burada görünmez — onlar MGB raporundadır.
-      const where: Record<string, unknown> = { hotelId: request.user.hotelId, isRequest: true }
+      const where: Record<string, unknown> = { hotelId: request.user.hotelId, isRequest: true, deletedAt: null }
       if (status) where.status = status
       if (departmentId) where.departmentId = departmentId
 
@@ -411,7 +411,12 @@ export async function ordersRoutes(app: FastifyInstance) {
         where: { id: request.params.id, hotelId },
       })
       if (!order) throw createError(404, 'Talep bulunamadı')
-      await app.prisma.order.delete({ where: { id: order.id } })
+      // SOFT DELETE: talebi fiziksel silmiyoruz, "silindi" işaretliyoruz.
+      // Order Taker listesinden gizlenir AMA raporlarda (MGB) kalır.
+      await app.prisma.order.update({
+        where: { id: order.id },
+        data: { deletedAt: new Date() },
+      })
       return reply.send({ message: 'Talep silindi' })
     },
   })
