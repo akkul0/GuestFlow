@@ -46,6 +46,8 @@ model Hotel {
   messageTemplates MessageTemplate[]
   rooms         Room[]
   reports       DailyReport[]
+  departments   Department[]
+  orders        Order[]
 
   @@map("hotels")
 }
@@ -147,6 +149,7 @@ model Guest {
 
   conversations Conversation[]
   companions    GuestCompanion[]
+  orders        Order[]
 
   @@unique([hotelId, phone])
   @@map("guests")
@@ -351,4 +354,73 @@ model AuditLog {
   createdAt  DateTime @default(now())
 
   @@map("audit_logs")
+}
+
+
+// ─────────────────────────────────────────
+// DEPARTMENTS (Order Taker)
+// ─────────────────────────────────────────
+
+model Department {
+  id        String   @id @default(uuid())
+  hotelId   String
+  hotel     Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  key       String   // FRONT_DESK, HOUSEKEEPING, TECHNICAL, FB, SECURITY veya manuel (orn: SPA)
+  name      String   // Gorunen ad (orn: "Ön Büro")
+  keywords  String?  @db.Text // AI eslestirme icin virgulle ayrilmis anahtar kelimeler
+  isActive  Boolean  @default(true)
+  isCustom  Boolean  @default(false) // manuel eklenen mi (hazir sablon degil)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orders    Order[]
+
+  @@unique([hotelId, key])
+  @@map("departments")
+}
+
+// ─────────────────────────────────────────
+// ORDERS (Misafir talepleri)
+// ─────────────────────────────────────────
+
+model Order {
+  id            String        @id @default(uuid())
+  hotelId       String
+  hotel         Hotel         @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  departmentId  String?
+  department    Department?   @relation(fields: [departmentId], references: [id])
+  departmentKey String        // departman silinse bile kalsin diye kopya
+  guestId       String?
+  guest         Guest?        @relation(fields: [guestId], references: [id])
+  category      String        @default("OTHER")
+  urgency       OrderUrgency  @default(MEDIUM)
+  requestText   String        @db.Text
+  roomNumber    String?
+  status        OrderStatus   @default(OPEN)
+  source        OrderSource   @default(WHATSAPP) // otomatik mi elle mi
+  note          String?       @db.Text
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([hotelId, status])
+  @@map("orders")
+}
+
+enum OrderStatus {
+  OPEN
+  ACKNOWLEDGED
+  IN_PROGRESS
+  DONE
+  CANCELLED
+}
+
+enum OrderUrgency {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum OrderSource {
+  WHATSAPP
+  MANUAL
 }
