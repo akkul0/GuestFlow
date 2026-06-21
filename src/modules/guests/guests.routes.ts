@@ -101,25 +101,8 @@ export async function guestsRoutes(app: FastifyInstance) {
       // Normalize phone to E.164-ish format
       const phone = request.body.phone.replace(/[\s\-()]/g, '')
 
-      // Check duplicate
-      const existing = await app.prisma.guest.findFirst({
-        where: { hotelId: request.user.hotelId, phone },
-      })
-      if (existing) {
-        // Reactivate if archived
-        if (!existing.isActive) {
-          // roomNumber Prisma alanı değil; çıkar (yoksa 500 verir)
-          const { roomNumber: _rn, birthDate: _bd, checkInDate: _ci, checkOutDate: _co, ...reactRest } = request.body
-          const updated = await app.prisma.guest.update({
-            where: { id: existing.id },
-            data: { ...reactRest, phone, isActive: true },
-          })
-          return reply.status(200).send(updated)
-        }
-        throw createError(409, 'A guest with this phone number already exists')
-      }
-
       // Oda NUMARASI verildiyse, o numaralı odayı bul (yoksa oluştur) ve roomId'ye çevir.
+      // (Hem yeni kayıt hem reaktivasyon için ortak kullanılır.)
       const { roomNumber } = request.body
       let roomId = request.body.roomId
       if (!roomId && roomNumber && roomNumber.trim()) {
@@ -134,6 +117,41 @@ export async function guestsRoutes(app: FastifyInstance) {
           })
         }
         roomId = room.id
+      }
+
+      // Check duplicate — aynı telefon = aynı kişi. İki AKTİF misafirde olamaz.
+      const existing = await app.prisma.guest.findFirst({
+        where: { hotelId: request.user.hotelId, phone },
+      })
+      if (existing) {
+        if (existing.isActive) {
+          // Aktif bir misafirde bu telefon zaten kayıtlı → hata ver.
+          throw createError(409, 'Bu telefon numarası zaten kayıtlı bir misafire ait')
+        }
+        // Sadece ARŞİVLENMİŞ (pasif) kayıt varsa geri aç + bilgileri (oda dahil) tazele.
+        const b0 = request.body
+        const updated = await app.prisma.guest.update({
+          where: { id: existing.id },
+          data: {
+            isActive: true,
+            phone,
+            firstName: b0.firstName,
+            lastName: b0.lastName,
+            language: b0.language ?? existing.language,
+            ...(roomId ? { roomId } : {}),
+            ...(b0.email && b0.email.trim() ? { email: b0.email.trim() } : {}),
+            ...(b0.nationality ? { nationality: b0.nationality } : {}),
+            ...(b0.agencyName ? { agencyName: b0.agencyName } : {}),
+            ...(b0.bookingSource ? { bookingSource: b0.bookingSource } : {}),
+            ...(b0.notes ? { notes: b0.notes } : {}),
+            ...(b0.reservationNo ? { reservationNo: b0.reservationNo } : {}),
+            ...(b0.birthDate ? { birthDate: new Date(b0.birthDate) } : {}),
+            ...(b0.checkInDate ? { checkInDate: new Date(b0.checkInDate) } : {}),
+            ...(b0.checkOutDate ? { checkOutDate: new Date(b0.checkOutDate) } : {}),
+          },
+          include: { room: true, companions: true },
+        })
+        return reply.status(200).send(updated)
       }
 
       const b = request.body
