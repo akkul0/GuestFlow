@@ -3,6 +3,18 @@ import { requireRole } from '../../common/guards/auth.guard'
 import { createError } from '../../common/utils/errors'
 import bcrypt from 'bcryptjs'
 
+// Telefonu standart hale getir: boşluk/tire/parantez temizle, Türkiye için +90 ekle.
+function normalizePhone(raw: string): string {
+  let p = raw.replace(/[\s\-()]/g, '').trim()
+  if (!p) return p
+  if (p.startsWith('+')) return p
+  if (p.startsWith('00')) return '+' + p.slice(2)
+  if (p.startsWith('0')) return '+90' + p.slice(1)      // 0532... → +90532...
+  if (p.startsWith('90')) return '+' + p                 // 90532... → +90532...
+  if (p.length === 10) return '+90' + p                  // 532...   → +90532...
+  return '+' + p
+}
+
 export async function hotelsRoutes(app: FastifyInstance) {
 
   // GET /hotels/:id/settings — hotel config
@@ -97,7 +109,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
           lastName: request.body.lastName,
           role: request.body.role as 'AGENT',
           language: request.body.language ?? 'tr',
-          ...(request.body.whatsappPhone ? { whatsappPhone: request.body.whatsappPhone } : {}),
+          ...(request.body.whatsappPhone ? { whatsappPhone: normalizePhone(request.body.whatsappPhone) } : {}),
           ...(request.body.departmentId ? { departmentId: request.body.departmentId } : {}),
         },
         select: {
@@ -112,7 +124,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
   // PATCH /hotels/:id/users/:userId
   app.patch<{
     Params: { id: string; userId: string }
-    Body: { firstName?: string; lastName?: string; role?: string; isActive?: boolean; language?: string }
+    Body: { firstName?: string; lastName?: string; role?: string; isActive?: boolean; language?: string; whatsappPhone?: string; departmentId?: string }
   }>('/:id/users/:userId', {
     schema: { tags: ['Hotels'], summary: 'Update a hotel user' },
     preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
@@ -124,11 +136,43 @@ export async function hotelsRoutes(app: FastifyInstance) {
 
       const updated = await app.prisma.user.update({
         where: { id: request.params.userId },
-        data: { ...request.body, role: request.body.role as 'AGENT' | undefined },
+        data: {
+          ...(request.body.firstName !== undefined && { firstName: request.body.firstName }),
+          ...(request.body.lastName !== undefined && { lastName: request.body.lastName }),
+          ...(request.body.role !== undefined && { role: request.body.role as 'AGENT' }),
+          ...(request.body.isActive !== undefined && { isActive: request.body.isActive }),
+          ...(request.body.language !== undefined && { language: request.body.language }),
+          ...(request.body.whatsappPhone !== undefined && { whatsappPhone: request.body.whatsappPhone ? normalizePhone(request.body.whatsappPhone) : null }),
+          ...(request.body.departmentId !== undefined && { departmentId: request.body.departmentId }),
+        },
         select: { id: true, username: true, email: true, firstName: true, lastName: true, role: true, isActive: true },
       })
 
       return reply.send(updated)
+    },
+  })
+
+  // DELETE /hotels/:id/users/:userId — personeli sil
+  app.delete<{ Params: { id: string; userId: string } }>('/:id/users/:userId', {
+    schema: { tags: ['Hotels'], summary: 'Delete a hotel user' },
+    preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
+    handler: async (request, reply) => {
+      const user = await app.prisma.user.findFirst({
+        where: { id: request.params.userId, hotelId: request.params.id },
+      })
+      if (!user) throw createError(404, 'Personel bulunamadı')
+
+      // Vardiya atamalarını temizle (bağlı kayıtlar silmeyi engellemesin)
+      await app.prisma.shiftAssignment.deleteMany({ where: { userId: user.id } })
+
+      // Atanmış konuşmaları boşa al (silinmesin, sadece atama kalksın)
+      await app.prisma.conversation.updateMany({
+        where: { assignedTo: user.id },
+        data: { assignedTo: null },
+      })
+
+      await app.prisma.user.delete({ where: { id: user.id } })
+      return reply.send({ message: 'Personel silindi' })
     },
   })
 }
