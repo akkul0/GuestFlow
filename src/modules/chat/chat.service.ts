@@ -18,7 +18,7 @@ export class ChatService {
     const { status, search, assignedTo, cursor, unreadOnly } = query
     const limit = parseInt(String(query.limit ?? 30))
 
-    const where: Record<string, unknown> = { hotelId }
+    const where: Record<string, unknown> = { hotelId, deletedAt: null }
     if (status) where.status = status
     if (assignedTo) where.assignedTo = assignedTo
     if (unreadOnly) where.unreadCount = { gt: 0 }
@@ -128,8 +128,13 @@ export class ChatService {
     })
     if (!conv) throw createError(404, 'Konuşma bulunamadı')
 
-    // Mesajlar ve etiketler cascade ile silinir (şemada onDelete: Cascade).
-    await this.app.prisma.conversation.delete({ where: { id: conversationId } })
+    // SOFT DELETE: konuşmayı fiziksel silmiyoruz, "silindi" işaretliyoruz.
+    // Böylece mesajlar veritabanında kalır ve raporlardaki (Dashboard, günlük
+    // rapor, MGB) istatistikler bozulmaz. Konuşma sadece listede gizlenir.
+    await this.app.prisma.conversation.update({
+      where: { id: conversationId },
+      data: { deletedAt: new Date() },
+    })
     return { message: 'Konuşma silindi' }
   }
 
@@ -407,6 +412,13 @@ export class ChatService {
         },
         include: { hotel: true, guest: true },
       })
+    } else if (conversation.deletedAt) {
+      // Silinmiş konuşmaya yeni mesaj geldi → DİRİLT (listede tekrar görünsün).
+      await this.app.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { deletedAt: null },
+      })
+      conversation.deletedAt = null
     }
 
     // ── Gelen mesaj cevirisi ──────────────────────────────
