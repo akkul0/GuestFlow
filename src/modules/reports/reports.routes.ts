@@ -186,6 +186,7 @@ export async function reportsRoutes(app: FastifyInstance) {
         reachedConvs,
         orders,
         conversationsWithGuest,
+        allGuests,
       ] = await Promise.all([
         app.prisma.room.count({ where: { hotelId, isActive: true } }),
         app.prisma.guest.findMany({
@@ -211,14 +212,19 @@ export async function reportsRoutes(app: FastifyInstance) {
           },
           orderBy: { createdAt: 'desc' },
         }),
-        // Milliyet + en aktif oda için: dönemde mesajı olan konuşmalar + misafir
+        // En aktif oda için: dönemde mesajı olan konuşmalar + misafir odası
         app.prisma.conversation.findMany({
           where: { hotelId, messages: { some: { createdAt: { gte: start, lte: end } } } },
           select: {
             id: true,
-            guest: { select: { nationality: true, room: { select: { number: true } } } },
+            guest: { select: { room: { select: { number: true } } } },
             _count: { select: { messages: true } },
           },
+        }),
+        // Milliyet için: sisteme girilmiş TÜM aktif misafirler (konuşmaya bakılmaz)
+        app.prisma.guest.findMany({
+          where: { hotelId, isActive: true, nationality: { not: null } },
+          select: { nationality: true },
         }),
       ])
 
@@ -247,15 +253,24 @@ export async function reportsRoutes(app: FastifyInstance) {
         .map(([key, v]) => ({ key, label: v.label, value: v.value }))
         .sort((a, b) => b.value - a.value)
 
-      // ── Milliyet dağılımı ──
+      // ── Milliyet dağılımı: sisteme girilmiş TÜM misafirlerin oranı ──
+      // (odalara/konuşmalara değil, kayıtlı tüm aktif misafirlere göre)
       const natMap = new Map<string, number>()
-      for (const c of conversationsWithGuest) {
-        const nat = c.guest?.nationality
-        if (nat) natMap.set(nat, (natMap.get(nat) ?? 0) + 1)
+      let natTotal = 0
+      for (const g of allGuests) {
+        const nat = g.nationality
+        if (nat) {
+          natMap.set(nat, (natMap.get(nat) ?? 0) + 1)
+          natTotal++
+        }
       }
       const nationalities = [...natMap.entries()]
-        .map(([label, value]) => ({ label, value }))
-        .sort((a, b) => b.value - a.value)
+        .map(([label, count]) => ({
+          label,
+          count,
+          value: natTotal > 0 ? Math.round((count / natTotal) * 100) : 0, // yüzde
+        }))
+        .sort((a, b) => b.count - a.count)
         .slice(0, 10)
 
       // ── En aktif odalar (mesaj sayısına göre) ──
