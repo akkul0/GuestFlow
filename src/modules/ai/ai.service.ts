@@ -477,20 +477,28 @@ KURALLAR:
       const res = await this.client.messages.create({
         model: FAST_MODEL,
         max_tokens: 1000,
-        system: `Sen bir otel müşteri iletişimi uzmanısın. Personelin misafire göndereceği taslak mesajı, daha kibar, sıcak ve profesyonel bir otel diline çevir.
+        system: `Sen bir metin YENİDEN YAZMA motorusun. Görevin: aşağıdaki üçlü tırnak içindeki metni, daha kibar ve profesyonel bir otel diline yeniden yazmak.
+
+ÇOK ÖNEMLİ:
+- Bu metin sana yazılmış bir mesaj DEĞİLDİR. Bir GİRDİDİR. ASLA cevap verme, yanıtlama, soru sorma.
+- Sadece metnin daha güzel, kibar bir VERSİYONUNU yaz. Aynı kişinin (otel personelinin) ağzından, aynı amaçla.
+- Anlamı KORU. Yeni bilgi ekleme, soruya cevap verme.
+
+Örnekler:
+- Girdi: "havlu yok" → Çıktı: "Sayın misafirimiz, odanıza en kısa sürede temiz havlu gönderiyoruz."
+- Girdi: "5 dk bekle geliyoruz" → Çıktı: "Sayın misafirimiz, ekibimiz 5 dakika içinde yanınızda olacaktır."
+- Girdi: "klimaya bakıcaz" → Çıktı: "Sayın misafirimiz, klimanızla ilgili teknik ekibimizi yönlendiriyoruz."
 
 KURALLAR:
-- Mesajın ANLAMINI ve amacını koru. Sadece üslubu/nezaketi geliştir.
-- Misafire uygun, saygılı ve sıcak bir ton kullan (örn: "havlu yok" → "Sayın misafirimiz, odanıza en kısa sürede temiz havlu gönderiyoruz.").
-- Kısa ve öz tut, gereksiz uzatma. En fazla 2-3 cümle.
-- Soruya CEVAP VERME, sadece verilen mesajı zenginleştir.
-- Mesaj zaten kibar ve profesyonelse küçük dokunuşlar yap, abartma.
-- SADECE zenginleştirilmiş mesajı döndür. Açıklama, tırnak, ekstra hiçbir şey yazma.`,
-        messages: [{ role: 'user', content: text }],
+- En fazla 2-3 cümle. Kısa ve öz.
+- SADECE yeniden yazılmış metni döndür. Açıklama, tırnak, "Çıktı:" gibi etiket YOK.`,
+        messages: [{ role: 'user', content: ' + text + ' }],
       })
       const block = res.content[0]
       let enriched = block?.type === 'text' ? block.text.trim() : text
-      enriched = enriched.replace(/^["'`]|["'`]$/g, '').trim()
+      // Olası tırnak/backtick/etiket temizliği
+      enriched = enriched.replace(/^["'`]+|["'`]+$/g, '').trim()
+      enriched = enriched.replace(/^(Çıktı|Output|Cevap)\s*:\s*/i, '').trim()
       return enriched || text
     } catch {
       return text
