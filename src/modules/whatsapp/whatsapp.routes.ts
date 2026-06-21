@@ -61,6 +61,51 @@ export async function whatsappRoutes(app: FastifyInstance) {
         const messages = value.messages
         const contacts = value.contacts
 
+        // ── Mesaj DURUM güncellemeleri (delivered/read/failed) ──────────
+        // Meta giden mesajların teslim durumunu "statuses" içinde gönderir.
+        // Bunları işlemezsek tüm mesajlar "SENT" kalır, iletim oranı %0 görünür.
+        const statuses = value.statuses
+        if (statuses && statuses.length > 0) {
+          for (const st of statuses) {
+            const waId = st.id
+            const statusStr = (st.status ?? '').toLowerCase()
+            if (!waId) continue
+
+            let newStatus: 'SENT' | 'DELIVERED' | 'READ' | 'FAILED' | null = null
+            const updateData: Record<string, unknown> = {}
+
+            if (statusStr === 'sent') {
+              newStatus = 'SENT'
+              updateData.sentAt = new Date()
+            } else if (statusStr === 'delivered') {
+              newStatus = 'DELIVERED'
+              updateData.deliveredAt = new Date()
+            } else if (statusStr === 'read') {
+              newStatus = 'READ'
+              updateData.readAt = new Date()
+            } else if (statusStr === 'failed') {
+              newStatus = 'FAILED'
+              const err = st.errors?.[0]
+              updateData.errorMessage = err?.title ?? err?.message ?? 'Bilinmeyen hata'
+              updateData.errorCode = err?.code ? String(err.code) : null
+            }
+
+            if (newStatus) {
+              updateData.status = newStatus
+              try {
+                await app.prisma.message.updateMany({
+                  where: { waMessageId: waId },
+                  data: updateData,
+                })
+              } catch (e) {
+                app.log.error({ e, waId }, 'Mesaj durumu güncellenemedi')
+              }
+            }
+          }
+          // statuses olayında mesaj (messages) olmaz, burada bitir.
+          return
+        }
+
         if (!messages || messages.length === 0) return
 
         const message = messages[0]
