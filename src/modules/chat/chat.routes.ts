@@ -17,6 +17,17 @@ export async function chatRoutes(app: FastifyInstance) {
     },
   })
 
+  // POST /chat/conversations — misafirle yeni konuşma başlat (varsa mevcut döner)
+  app.post<{ Body: { guestId: string } }>('/conversations', {
+    schema: { tags: ['Chat'], summary: 'Start a conversation with a guest' },
+    handler: async (request, reply) => {
+      const { guestId } = request.body
+      if (!guestId) return reply.status(400).send({ message: 'guestId gerekli' })
+      const conversation = await chatService.createConversation(request.user.hotelId, guestId)
+      return reply.status(201).send(conversation)
+    },
+  })
+
   // GET /chat/conversations/:id
   app.get<{ Params: { id: string } }>('/conversations/:id', {
     schema: { tags: ['Chat'], summary: 'Get conversation with messages' },

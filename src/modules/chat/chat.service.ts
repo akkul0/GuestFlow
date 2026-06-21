@@ -121,6 +121,45 @@ export class ChatService {
     return { items: items.reverse(), hasMore, nextCursor }
   }
 
+  async createConversation(hotelId: string, guestId: string) {
+    // Misafiri bul
+    const guest = await this.app.prisma.guest.findFirst({
+      where: { id: guestId, hotelId },
+      include: { room: true },
+    })
+    if (!guest) throw createError(404, 'Misafir bulunamadı')
+    if (!guest.phone) throw createError(400, 'Misafirin telefon numarası yok')
+
+    // Telefonu normalize et (WhatsApp contact id formatı: + olmadan)
+    const waContactId = guest.phone.replace(/[\s\-()]/g, '').replace(/^\+/, '')
+
+    // Bu misafir/telefon için zaten konuşma var mı?
+    const existing = await this.app.prisma.conversation.findFirst({
+      where: { hotelId, waContactId },
+    })
+    if (existing) {
+      // Varsa onu döndür (yeni oluşturma)
+      return existing
+    }
+
+    // Yeni boş konuşma oluştur
+    const conversation = await this.app.prisma.conversation.create({
+      data: {
+        hotelId,
+        guestId: guest.id,
+        waContactId,
+        displayName: `${guest.firstName} ${guest.lastName}`.trim(),
+        language: guest.language ?? 'tr',
+        status: 'OPEN',
+        isAiEnabled: true,
+        lastMessageAt: new Date(),
+        unreadCount: 0,
+      },
+    })
+
+    return conversation
+  }
+
   async sendMessage(
     hotelId: string,
     conversationId: string,
