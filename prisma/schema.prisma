@@ -68,9 +68,15 @@ model User {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  refreshTokens RefreshToken[]
-  messages      Message[]       @relation("SentByUser")
-  assignedConvs Conversation[]  @relation("AssignedAgent")
+  // Vardiya sistemi
+  whatsappPhone String?         // calisanin sahsi WhatsApp numarasi (bildirim icin)
+  departmentId  String?         // hangi departmanda calisiyor
+  department    Department?     @relation(fields: [departmentId], references: [id])
+
+  refreshTokens     RefreshToken[]
+  messages          Message[]          @relation("SentByUser")
+  assignedConvs     Conversation[]     @relation("AssignedAgent")
+  shiftAssignments  ShiftAssignment[]
 
   @@unique([hotelId, email])
   @@unique([hotelId, username])
@@ -374,6 +380,8 @@ model Department {
   updatedAt DateTime @updatedAt
 
   orders    Order[]
+  shifts    Shift[]
+  users     User[]
 
   @@unique([hotelId, key])
   @@map("departments")
@@ -423,4 +431,50 @@ enum OrderUrgency {
 enum OrderSource {
   WHATSAPP
   MANUAL
+}
+
+
+// ─────────────────────────────────────────
+// SHIFTS (Vardiya sistemi)
+// ─────────────────────────────────────────
+
+model Shift {
+  id           String   @id @default(uuid())
+  hotelId      String
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  name         String   // orn: "Sabah", "Aksam", "Gece"
+  startMinutes Int      // gece yarisindan dakika (0..1439). orn: 08:00 = 480
+  endMinutes   Int      // bitis. endMinutes <= startMinutes ise gece asiri (overnight)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  assignments  ShiftAssignment[]
+
+  @@index([hotelId, departmentId])
+  @@map("shifts")
+}
+
+model ShiftAssignment {
+  id           String   @id @default(uuid())
+  hotelId      String
+  shiftId      String
+  shift        Shift    @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  departmentId String   // hangi departman (sorgu kolayligi icin kopya)
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date         DateTime @db.Date // vardiyanin basladigi yerel takvim gunu
+  status       ShiftAssignmentStatus @default(SCHEDULED)
+  createdAt    DateTime @default(now())
+
+  @@unique([shiftId, userId, date])
+  @@index([hotelId, date])
+  @@index([departmentId, date])
+  @@map("shift_assignments")
+}
+
+enum ShiftAssignmentStatus {
+  SCHEDULED
+  OFF
 }
