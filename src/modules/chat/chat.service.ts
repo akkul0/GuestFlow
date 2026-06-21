@@ -440,7 +440,7 @@ export class ChatService {
   private async checkAndNotifyOrderTaker(conversation: any, latestMessage: string, latestMediaUrl?: string) {
     const messages = conversation.messages ?? []
 
-    // SADECE son mesaj bir talepse VEYA fotoğraf eklendiyse bildirim gonder.
+    // SADECE son mesaj bir talepse VEYA fotoğraf eklendiyse işlem yap.
     // Eski talepleri tekrar tetikleme!
     const lastIsRequest = this.isServiceRequest(latestMessage)
     const hasMedia = !!latestMediaUrl
@@ -456,14 +456,80 @@ export class ChatService {
       }
     }
 
-    // Oda numarasi yoksa bildirim gonderme (AI misafirden oda no isteyecek)
+    // Oda numarasi yoksa işlem yapma (AI misafirden oda no isteyecek)
     if (!roomNo) return
 
+    // ── Departmana eşleştir + Order olarak KAYDET ──────────────
+    // (bildirimden once kaydet, boylece Order Taker sayfasinda gorunsun)
+    const savedOrder = await this.saveOrderFromMessage(
+      conversation,
+      latestMessage,
+      roomNo,
+    ).catch((err) => {
+      this.app.log.error({ err }, 'Order kaydi basarisiz')
+      return null
+    })
+
     // Her zaman SON mesaji gonder (eski talebi degil)
-    await this.notifyOrderTaker(conversation, latestMessage, roomNo, latestMediaUrl)
+    await this.notifyOrderTaker(conversation, latestMessage, roomNo, latestMediaUrl, savedOrder)
   }
 
-  private async notifyOrderTaker(conversation: any, guestMessage: string, roomNo?: string, mediaUrl?: string) {
+  /**
+   * Gelen WhatsApp talebini departmana eşleştirip orders tablosuna kaydeder.
+   * Order Taker sayfasında otomatik görünür.
+   */
+  private async saveOrderFromMessage(
+    conversation: any,
+    requestText: string,
+    roomNo: string,
+  ): Promise<{ departmentKey: string; departmentName: string; urgency: string } | null> {
+    const hotelId = conversation.hotelId
+
+    // Otelin aktif departmanlarını al
+    const departments = await this.app.prisma.department.findMany({
+      where: { hotelId, isActive: true },
+      select: { id: true, key: true, name: true, keywords: true },
+    })
+
+    // AI ile eşleştir (önce anahtar kelime, yoksa AI tahmini)
+    const matched = await this.aiService.matchDepartment(requestText, departments)
+
+    // Aciliyet için kategorize (mevcut fonksiyon)
+    const cat = await this.aiService.categorizeRequest(requestText)
+    const urgencyMap: Record<string, 'LOW' | 'MEDIUM' | 'HIGH'> = {
+      low: 'LOW', medium: 'MEDIUM', high: 'HIGH',
+    }
+    const urgency = urgencyMap[cat.urgency] ?? 'MEDIUM'
+
+    // Order kaydı oluştur
+    await this.app.prisma.order.create({
+      data: {
+        hotelId,
+        departmentId: matched?.id ?? null,
+        departmentKey: matched?.key ?? 'OTHER',
+        guestId: conversation.guestId ?? null,
+        category: cat.category ?? 'OTHER',
+        urgency,
+        requestText,
+        roomNumber: roomNo,
+        status: 'OPEN',
+        source: 'WHATSAPP',
+      },
+    })
+
+    this.app.log.info(
+      { roomNo, department: matched?.name ?? 'OTHER', urgency },
+      'Order kaydedildi (WhatsApp)'
+    )
+
+    return {
+      departmentKey: matched?.key ?? 'OTHER',
+      departmentName: matched?.name ?? 'Belirsiz',
+      urgency,
+    }
+  }
+
+  private async notifyOrderTaker(conversation: any, guestMessage: string, roomNo?: string, mediaUrl?: string, savedOrder?: { departmentKey: string; departmentName: string; urgency: string } | null) {
     try {
       const ORDER_TAKER_PHONE = (process.env.ORDER_TAKER_PHONE ?? '+905514072515').replace('+', '')
       const { hotel, guest } = conversation
@@ -490,7 +556,7 @@ export class ChatService {
         `🛏️ Oda: ${resolvedRoom}\n` +
         `👤 Misafir: ${guestName}\n` +
         `💬 Talep: ${guestMessage}\n` +
-        `📂 Departman: ${category.department}\n` +
+        `📂 Departman: ${savedOrder?.departmentName ?? category.department}\n` +
         `${urgencyText}\n` +
         `⏰ Saat: ${time}`
 
