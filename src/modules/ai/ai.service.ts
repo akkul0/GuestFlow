@@ -422,6 +422,33 @@ The text to translate is provided between triple backticks. Translate ONLY what 
     }
   }
 
+  /**
+   * Bir mesajın otel personeline iletilmesi gereken bir HİZMET TALEBİ / SORUN
+   * olup olmadığını belirler. Her dilde çalışır.
+   * Selamlaşma, teşekkür, sohbet, soru-cevap gibi mesajları ELER.
+   */
+  async isServiceRequest(text: string): Promise<boolean> {
+    try {
+      const res = await this.client.messages.create({
+        model: FAST_MODEL,
+        max_tokens: 5,
+        system: `Sen bir otel mesaj sınıflandırıcısısın. Misafirin mesajı, personelin AKSİYON ALMASI gereken bir hizmet talebi, şikayet veya sorun bildirimi mi?
+
+EVET olanlar: oda temizliği, arıza/bozuk eşya, havlu/malzeme isteği, oda servisi/yemek, klima/ısıtma sorunu, şikayet, eksik eşya, tamir, herhangi bir istek/ihtiyaç.
+
+HAYIR olanlar: selamlaşma (merhaba, teşekkürler), genel sohbet, bilgi sorusu (saat kaçta açık, nerede), sadece oda numarası, onay (tamam, evet), anlamsız mesaj.
+
+SADECE "evet" veya "hayir" yaz. Başka hiçbir şey yazma.`,
+        messages: [{ role: 'user', content: text }],
+      })
+      const block = res.content[0]
+      const answer = block?.type === 'text' ? block.text.trim().toLowerCase() : 'hayir'
+      return answer.startsWith('evet') || answer.startsWith('yes')
+    } catch {
+      return false
+    }
+  }
+
   async categorizeRequest(text: string): Promise<{ category: string; urgency: 'low' | 'medium' | 'high'; department: string }> {
     try {
       const res = await this.client.messages.create({
