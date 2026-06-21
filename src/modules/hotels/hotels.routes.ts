@@ -63,7 +63,6 @@ export async function hotelsRoutes(app: FastifyInstance) {
         select: {
           id: true, username: true, email: true, firstName: true, lastName: true,
           role: true, language: true, isActive: true, lastLoginAt: true, createdAt: true,
-          whatsappPhone: true, departmentId: true,
         },
         orderBy: { createdAt: 'asc' },
       })
@@ -82,10 +81,9 @@ export async function hotelsRoutes(app: FastifyInstance) {
       const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS ?? '12')
       const passwordHash = await bcrypt.hash(request.body.password, saltRounds)
 
-      // E-posta artık kullanıcıdan istenmiyor. Veritabanı zorunlu + benzersiz
-      // tuttuğu için, verilmezse kullanıcı adından dahili bir e-posta üretilir.
-      const emailValue =
-        request.body.email && request.body.email.trim().length > 0
+      // Email kullanmıyoruz ama DB'de zorunlu + benzersiz. Boşsa otomatik üret.
+      const email =
+        request.body.email && request.body.email.trim()
           ? request.body.email.trim()
           : `${request.body.username}@stayline.local`
 
@@ -93,18 +91,17 @@ export async function hotelsRoutes(app: FastifyInstance) {
         data: {
           hotelId: request.params.id,
           username: request.body.username,
-          email: emailValue,
+          email,
           passwordHash,
           firstName: request.body.firstName,
           lastName: request.body.lastName,
           role: request.body.role as 'AGENT',
           language: request.body.language ?? 'tr',
-          whatsappPhone: request.body.whatsappPhone ?? null,
-          departmentId: request.body.departmentId ?? null,
+          ...(request.body.whatsappPhone ? { whatsappPhone: request.body.whatsappPhone } : {}),
+          ...(request.body.departmentId ? { departmentId: request.body.departmentId } : {}),
         },
         select: {
           id: true, username: true, email: true, firstName: true, lastName: true, role: true, createdAt: true,
-          whatsappPhone: true, departmentId: true,
         },
       })
 
@@ -115,7 +112,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
   // PATCH /hotels/:id/users/:userId
   app.patch<{
     Params: { id: string; userId: string }
-    Body: { firstName?: string; lastName?: string; role?: string; isActive?: boolean; language?: string; whatsappPhone?: string | null; departmentId?: string | null }
+    Body: { firstName?: string; lastName?: string; role?: string; isActive?: boolean; language?: string }
   }>('/:id/users/:userId', {
     schema: { tags: ['Hotels'], summary: 'Update a hotel user' },
     preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
@@ -128,34 +125,10 @@ export async function hotelsRoutes(app: FastifyInstance) {
       const updated = await app.prisma.user.update({
         where: { id: request.params.userId },
         data: { ...request.body, role: request.body.role as 'AGENT' | undefined },
-        select: {
-          id: true, username: true, email: true, firstName: true, lastName: true, role: true, isActive: true,
-          whatsappPhone: true, departmentId: true,
-        },
+        select: { id: true, username: true, email: true, firstName: true, lastName: true, role: true, isActive: true },
       })
 
       return reply.send(updated)
-    },
-  })
-
-  // DELETE /hotels/:id/users/:userId — personeli sil
-  app.delete<{ Params: { id: string; userId: string } }>('/:id/users/:userId', {
-    schema: { tags: ['Hotels'], summary: 'Delete a hotel user' },
-    preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
-    handler: async (request, reply) => {
-      const user = await app.prisma.user.findFirst({
-        where: { id: request.params.userId, hotelId: request.params.id },
-      })
-      if (!user) throw createError(404, 'Personel bulunamadı')
-
-      // Kendini silmeyi engelle
-      if (user.id === request.user.sub) {
-        throw createError(400, 'Kendi hesabınızı silemezsiniz')
-      }
-
-      // Vardiya atamaları cascade ile silinir (şemada onDelete: Cascade).
-      await app.prisma.user.delete({ where: { id: user.id } })
-      return reply.send({ message: 'Personel silindi' })
     },
   })
 }
