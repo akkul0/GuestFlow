@@ -236,6 +236,7 @@ model Message {
   deliveredAt    DateTime?
   readAt         DateTime?
   createdAt      DateTime      @default(now())
+  deletedAt      DateTime?     // migration ile eklendi; şu an kullanılmıyor (zararsız)
 
   @@map("messages")
 }
