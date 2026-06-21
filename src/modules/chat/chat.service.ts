@@ -102,7 +102,7 @@ export class ChatService {
     })
     if (!conv) throw createError(404, 'Conversation not found')
 
-    const where: Record<string, unknown> = { conversationId, deletedAt: null }
+    const where: Record<string, unknown> = { conversationId }
     if (cursor) where.createdAt = { lt: new Date(cursor) }
 
     const messages = await this.app.prisma.message.findMany({
@@ -119,21 +119,6 @@ export class ChatService {
     const nextCursor = hasMore ? items[items.length - 1].createdAt.toISOString() : null
 
     return { items: items.reverse(), hasMore, nextCursor }
-  }
-
-  // Tek bir mesajı SOFT-DELETE eder: ekrandan gizlenir ama veritabanında kalır.
-  // Rapor sayıları (mesaj adedi, AI oranı vb.) DEĞİŞMEZ.
-  async deleteMessage(hotelId: string, conversationId: string, messageId: string) {
-    const message = await this.app.prisma.message.findFirst({
-      where: { id: messageId, conversationId, hotelId },
-    })
-    if (!message) throw createError(404, 'Mesaj bulunamadı')
-
-    await this.app.prisma.message.update({
-      where: { id: message.id },
-      data: { deletedAt: new Date() },
-    })
-    return { message: 'Mesaj silindi' }
   }
 
   async deleteConversation(hotelId: string, conversationId: string) {
