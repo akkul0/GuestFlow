@@ -442,6 +442,72 @@ Return ONLY valid JSON (no markdown, no explanation) with these exact keys:
     }
   }
 
+  /**
+   * Gelen talebi bir departmana eşleştirir.
+   * 1) ÖNCE anahtar kelime taraması (ucuz, kesin) - AI çağrısı yok.
+   * 2) Bulamazsa AI'a sorar (departman adları + anahtar kelimelerle).
+   * departments: [{ id, key, name, keywords }]
+   * Döner: eşleşen departmanın { id, key, name } veya null (hiçbiri uymadıysa).
+   */
+  async matchDepartment(
+    text: string,
+    departments: { id: string; key: string; name: string; keywords?: string | null }[],
+  ): Promise<{ id: string; key: string; name: string } | null> {
+    if (!departments || departments.length === 0) return null
+    const lower = ' ' + text.toLowerCase() + ' '
+
+    // ── 1) Anahtar kelime taraması ──────────────────────
+    // Her departmanın kelimelerini tara. En çok eşleşen departmanı seç.
+    let best: { dept: typeof departments[number]; hits: number } | null = null
+    for (const dept of departments) {
+      const keywords = (dept.keywords ?? '')
+        .split(',')
+        .map((k) => k.trim().toLowerCase())
+        .filter((k) => k.length >= 2)
+      let hits = 0
+      for (const kw of keywords) {
+        // Kelime sınırlarıyla eşleştir (kısmi eşleşme de say: "klima" -> "klimam")
+        if (lower.includes(kw)) hits++
+      }
+      if (hits > 0 && (!best || hits > best.hits)) {
+        best = { dept, hits }
+      }
+    }
+    if (best) {
+      return { id: best.dept.id, key: best.dept.key, name: best.dept.name }
+    }
+
+    // ── 2) Anahtar kelime bulamadı → AI tahmini ─────────
+    try {
+      const deptList = departments
+        .map((d, i) => `${i + 1}. ${d.name} (anahtar: ${d.keywords ?? 'yok'})`)
+        .join('\n')
+
+      const res = await this.client.messages.create({
+        model: FAST_MODEL,
+        max_tokens: 10,
+        system: `Sen bir otel talep yönlendirme uzmanısın. Misafirin talebini aşağıdaki departmanlardan EN UYGUN olanına yönlendir.
+
+Departmanlar:
+${deptList}
+
+SADECE departmanın numarasını döndür (1, 2, 3...). Başka hiçbir şey yazma. Hiçbiri uymuyorsa "0" yaz.`,
+        messages: [{ role: 'user', content: text }],
+      })
+      const block = res.content[0]
+      const answer = block?.type === 'text' ? block.text.trim() : '0'
+      const idx = parseInt(answer.replace(/[^0-9]/g, ''), 10)
+
+      if (idx >= 1 && idx <= departments.length) {
+        const d = departments[idx - 1]
+        return { id: d.id, key: d.key, name: d.name }
+      }
+      return null
+    } catch {
+      return null
+    }
+  }
+
   private buildSystemPrompt(hotel: Hotel, guest: Guest | null, currentTime: string, weather: string, places = ''): string {
     const basePrompt = (hotel as any).aiSystemPrompt ??
       `You are a helpful hotel concierge assistant for ${hotel.name}, powered by GuestFlow.
