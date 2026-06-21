@@ -567,7 +567,31 @@ export class ChatService {
 
     // Mesajı İKİ boyutta değerlendir: iş talebi mi + şikayet mi.
     const hasMedia = !!latestMediaUrl
-    const analysis = await this.aiService.analyzeMessage(latestMessage)
+    let analysis = await this.aiService.analyzeMessage(latestMessage)
+
+    // Son mesaj tek başına istek/şikayet DEĞİLSE (örn. sadece "1111" gibi oda no
+    // veya "evet/tamam" gibi kısa yanıt), misafir muhtemelen ÖNCEKİ talebine
+    // ek bilgi veriyordur. Bu durumda son birkaç GELEN mesajı BİRLEŞTİREREK
+    // tekrar değerlendir; böylece "klimam bozuk" + "1111" ayrı geldiğinde de
+    // talep doğru algılanır ve Order Taker'a düşer.
+    let effectiveText = latestMessage   // Order'a kaydedilecek talep metni
+    if (!analysis.isRequest && !analysis.isComplaint && !hasMedia) {
+      const recentInbound = (messages as any[])
+        .filter((m) => m.direction === 'INBOUND')
+        .slice(0, 4)                       // son 4 gelen mesaj (yeni→eski)
+        .map((m) => m.body ?? '')
+        .filter((t) => t.trim().length > 0)
+        .reverse()                          // eski→yeni sıraya çevir
+        .join('. ')
+      if (recentInbound && recentInbound !== latestMessage) {
+        const combined = await this.aiService.analyzeMessage(recentInbound)
+        if (combined.isRequest || combined.isComplaint) {
+          analysis = combined
+          effectiveText = recentInbound    // talep metni birleşik olsun (anlamlı)
+        }
+      }
+    }
+
     // Medya varsa (fotoğraf) iş talebi say (bozuk eşya fotoğrafı gibi).
     const isRequest = analysis.isRequest || hasMedia
     const isComplaint = analysis.isComplaint
@@ -575,8 +599,12 @@ export class ChatService {
     // İkisi de değilse (selamlaşma, sohbet) → hiçbir şey yapma.
     if (!isRequest && !isComplaint) return
 
-    // Oda numarasini bul: once son mesajda, yoksa konusma gecmisinde
-    let roomNo: string | null = this.extractRoomNumber(latestMessage)
+    // Oda numarasini bul:
+    //  1) ÖNCE misafirin KAYITLI odasi (guest.room.number) — en güvenilir
+    //  2) yoksa son mesajda yazili oda no
+    //  3) o da yoksa konusma gecmisindeki mesajlarda
+    let roomNo: string | null = conversation.guest?.room?.number ?? null
+    if (!roomNo) roomNo = this.extractRoomNumber(latestMessage)
     if (!roomNo) {
       for (const m of messages) {
         const r = this.extractRoomNumber(m.body ?? '')
@@ -591,7 +619,7 @@ export class ChatService {
       // Yine de SADECE şikayet boyutu varsa onu kaydet (oda no'suz).
       if (isComplaint) {
         await this.saveOrderFromMessage(
-          conversation, latestMessage, null, false, true,
+          conversation, effectiveText, null, false, true,
         ).catch((err) => this.app.log.error({ err }, 'Şikayet kaydı başarısız'))
       }
       return
@@ -602,7 +630,7 @@ export class ChatService {
     // Order Taker (iş) ve MGB (şikayet) ayrı ayrı filtreleyebilir.
     const savedOrder = await this.saveOrderFromMessage(
       conversation,
-      latestMessage,
+      effectiveText,
       roomNo,
       isRequest,
       isComplaint,
