@@ -83,6 +83,22 @@ export async function chatRoutes(app: FastifyInstance) {
     },
   )
 
+  // DELETE /chat/conversations/:id/messages/:messageId — tek mesajı sil (soft)
+  app.delete<{ Params: { id: string; messageId: string } }>(
+    '/conversations/:id/messages/:messageId',
+    {
+      schema: { tags: ['Chat'], summary: 'Soft-delete a single message' },
+      handler: async (request, reply) => {
+        const result = await chatService.deleteMessage(
+          request.user.hotelId,
+          request.params.id,
+          request.params.messageId,
+        )
+        return reply.send(result)
+      },
+    },
+  )
+
   // PATCH /chat/conversations/:id
   app.patch<{ Params: { id: string }; Body: any }>(
     '/conversations/:id',

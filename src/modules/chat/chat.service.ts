@@ -102,7 +102,7 @@ export class ChatService {
     })
     if (!conv) throw createError(404, 'Conversation not found')
 
-    const where: Record<string, unknown> = { conversationId }
+    const where: Record<string, unknown> = { conversationId, deletedAt: null }
     if (cursor) where.createdAt = { lt: new Date(cursor) }
 
     const messages = await this.app.prisma.message.findMany({
@@ -119,6 +119,21 @@ export class ChatService {
     const nextCursor = hasMore ? items[items.length - 1].createdAt.toISOString() : null
 
     return { items: items.reverse(), hasMore, nextCursor }
+  }
+
+  // Tek bir mesajı SOFT-DELETE eder: ekrandan gizlenir ama veritabanında kalır.
+  // Rapor sayıları (mesaj adedi, AI oranı vb.) DEĞİŞMEZ.
+  async deleteMessage(hotelId: string, conversationId: string, messageId: string) {
+    const message = await this.app.prisma.message.findFirst({
+      where: { id: messageId, conversationId, hotelId },
+    })
+    if (!message) throw createError(404, 'Mesaj bulunamadı')
+
+    await this.app.prisma.message.update({
+      where: { id: message.id },
+      data: { deletedAt: new Date() },
+    })
+    return { message: 'Mesaj silindi' }
   }
 
   async deleteConversation(hotelId: string, conversationId: string) {
@@ -155,14 +170,7 @@ export class ChatService {
       where: { hotelId, waContactId },
     })
     if (existing) {
-      // Konuşma silinmişse dirilt + misafir bağını güncelle (listede görünsün).
-      if (existing.deletedAt || existing.guestId !== guest.id) {
-        return this.app.prisma.conversation.update({
-          where: { id: existing.id },
-          data: { deletedAt: null, guestId: guest.id },
-        })
-      }
-      // Aktifse olduğu gibi döndür.
+      // Varsa onu döndür (yeni oluşturma)
       return existing
     }
 
@@ -305,7 +313,7 @@ export class ChatService {
       where: { id: conversationId, hotelId },
       include: {
         hotel: true,
-        guest: { include: { room: true } },  // room: AI öneri de oda no'yu bilsin
+        guest: true,
         messages: {
           orderBy: { createdAt: 'desc' },
           take: 10,
@@ -357,7 +365,7 @@ export class ChatService {
 
   async getUnmatchedConversations(hotelId: string) {
     const conversations = await this.app.prisma.conversation.findMany({
-      where: { hotelId, guestId: null, deletedAt: null, status: { not: ConversationStatus.ARCHIVED } },
+      where: { hotelId, guestId: null, status: { not: ConversationStatus.ARCHIVED } },
       orderBy: { lastMessageAt: 'desc' },
       include: {
         messages: {
@@ -488,7 +496,7 @@ export class ChatService {
       where: { id: conversation.id },
       include: {
         hotel: true,
-        guest: { include: { room: true } },  // room: AI misafirin oda no'sunu bilsin
+        guest: true,
         messages: { orderBy: { createdAt: 'desc' }, take: 10 },
       },
     })
