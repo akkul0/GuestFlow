@@ -408,18 +408,58 @@ The text to translate is provided between triple backticks. Translate ONLY what 
   }
 
   async detectLanguage(text: string): Promise<string> {
+    const sample = (text ?? '').trim()
+    if (!sample) return 'tr'
+
+    // ── 1) ALFABE BAZLI ÖN-TESPİT (AI'dan önce, hızlı + kesin) ──────────
+    // Belirli yazı sistemleri o dile ait olduğunu kesinleştirir; bu sayede
+    // kısa/argo mesajlarda AI'ın yanılması (örn. Kiril'i İngilizce sanması)
+    // önlenir.
+    const scriptLang = this.detectByScript(sample)
+    if (scriptLang) return scriptLang
+
+    // ── 2) AI İLE TESPİT (Latin alfabeli diller için: tr/en/de/fr...) ───
     try {
       const res = await this.client.messages.create({
         model: FAST_MODEL,
         max_tokens: 10,
-        system: 'Detect the language of the text. Reply with only the ISO 639-1 language code (e.g. "tr", "en", "de", "ru"). Nothing else.',
-        messages: [{ role: 'user', content: text.slice(0, 200) }],
+        system:
+          'You are a language detector. Reply with ONLY the lowercase ISO 639-1 code (two letters) of the language, e.g. tr, en, de, fr, ru, ar, es, it. No punctuation, no words, no explanation. If unsure between Turkish and another language, prefer the one most likely for a hotel guest message.',
+        messages: [{ role: 'user', content: sample.slice(0, 200) }],
       })
       const block = res.content[0]
-      return block?.type === 'text' ? block.text.trim().toLowerCase().slice(0, 5) : 'tr'
+      if (block?.type !== 'text') return 'tr'
+      // Çıktıdan ilk 2 harfli kodu ayıkla (model fazladan kelime yazsa bile).
+      const m = block.text.toLowerCase().match(/[a-z]{2}/)
+      return m ? m[0] : 'tr'
     } catch {
       return 'tr'
     }
+  }
+
+  // Yazı sistemine göre kesin dil tespiti. Latin dışı alfabeler tek bir
+  // ana dile güçlü şekilde işaret eder; bulunursa AI'a hiç sormayız.
+  private detectByScript(text: string): string | null {
+    const counts: Record<string, number> = {}
+    const add = (k: string) => { counts[k] = (counts[k] ?? 0) + 1 }
+    for (const ch of text) {
+      const code = ch.codePointAt(0) ?? 0
+      if (code >= 0x0400 && code <= 0x04ff) add('ru')        // Kiril → Rusça
+      else if (code >= 0x0600 && code <= 0x06ff) add('ar')   // Arapça
+      else if (code >= 0x0590 && code <= 0x05ff) add('he')   // İbranice
+      else if (code >= 0x0370 && code <= 0x03ff) add('el')   // Yunanca
+      else if (code >= 0x4e00 && code <= 0x9fff) add('zh')   // Çince (Han)
+      else if (code >= 0x3040 && code <= 0x30ff) add('ja')   // Japonca (kana)
+      else if (code >= 0xac00 && code <= 0xd7af) add('ko')   // Korece (Hangul)
+    }
+    // En az 2 özel-alfabe karakteri varsa o dili kesinleştir (tek tük
+    // sembol/emoji yanlış tetiklemesin).
+    let best: string | null = null
+    let bestN = 0
+    for (const [lang, n] of Object.entries(counts)) {
+      if (n > bestN) { best = lang; bestN = n }
+    }
+    return bestN >= 2 ? best : null
   }
 
   /**
