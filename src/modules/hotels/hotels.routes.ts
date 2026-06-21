@@ -63,6 +63,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
         select: {
           id: true, username: true, email: true, firstName: true, lastName: true,
           role: true, language: true, isActive: true, lastLoginAt: true, createdAt: true,
+          whatsappPhone: true, departmentId: true,
         },
         orderBy: { createdAt: 'asc' },
       })
@@ -73,7 +74,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
   // POST /hotels/:id/users
   app.post<{
     Params: { id: string }
-    Body: { username: string; email: string; password: string; firstName: string; lastName: string; role: string; language?: string }
+    Body: { username: string; email: string; password: string; firstName: string; lastName: string; role: string; language?: string; whatsappPhone?: string; departmentId?: string }
   }>('/:id/users', {
     schema: { tags: ['Hotels'], summary: 'Create a hotel user' },
     preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
@@ -91,9 +92,12 @@ export async function hotelsRoutes(app: FastifyInstance) {
           lastName: request.body.lastName,
           role: request.body.role as 'AGENT',
           language: request.body.language ?? 'tr',
+          whatsappPhone: request.body.whatsappPhone ?? null,
+          departmentId: request.body.departmentId ?? null,
         },
         select: {
           id: true, username: true, email: true, firstName: true, lastName: true, role: true, createdAt: true,
+          whatsappPhone: true, departmentId: true,
         },
       })
 
@@ -104,7 +108,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
   // PATCH /hotels/:id/users/:userId
   app.patch<{
     Params: { id: string; userId: string }
-    Body: { firstName?: string; lastName?: string; role?: string; isActive?: boolean; language?: string }
+    Body: { firstName?: string; lastName?: string; role?: string; isActive?: boolean; language?: string; whatsappPhone?: string | null; departmentId?: string | null }
   }>('/:id/users/:userId', {
     schema: { tags: ['Hotels'], summary: 'Update a hotel user' },
     preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
@@ -117,7 +121,10 @@ export async function hotelsRoutes(app: FastifyInstance) {
       const updated = await app.prisma.user.update({
         where: { id: request.params.userId },
         data: { ...request.body, role: request.body.role as 'AGENT' | undefined },
-        select: { id: true, username: true, email: true, firstName: true, lastName: true, role: true, isActive: true },
+        select: {
+          id: true, username: true, email: true, firstName: true, lastName: true, role: true, isActive: true,
+          whatsappPhone: true, departmentId: true,
+        },
       })
 
       return reply.send(updated)
