@@ -658,7 +658,11 @@ If the guest sends an image, analyze it and respond appropriately (e.g., if it s
 
     if (!guest) return basePrompt + timeContext
 
-    const guestContext = `\n\nMisafir bilgileri:\n- Ad: ${guest.firstName} ${guest.lastName}\n- Oda: ${(guest as any).roomId ?? 'Atanmamış'}\n- Check-in: ${guest.checkInDate?.toLocaleDateString('tr-TR') ?? 'Bilinmiyor'}\n- Check-out: ${guest.checkOutDate?.toLocaleDateString('tr-TR') ?? 'Bilinmiyor'}\n- Uyruk: ${guest.nationality ?? 'Bilinmiyor'}\n- Dil: ${guest.language}${(guest as any).isVip ? '\n- VIP Misafir: Öncelikli ilgi göster.' : ''}\n\nMisafirin diline göre yanıt ver (${guest.language}).`
+    const roomNo = (guest as any).room?.number ?? (guest as any).roomNumber ?? null
+    const roomLine = roomNo
+      ? `\n- Oda numarası: ${roomNo} (Misafirin oda numarasını BİLİYORSUN. Talep için tekrar oda no SORMA.)`
+      : `\n- Oda: Atanmamış (Gerekirse misafirden oda numarasını iste.)`
+    const guestContext = `\n\nMisafir bilgileri:\n- Ad: ${guest.firstName} ${guest.lastName}${roomLine}\n- Check-in: ${guest.checkInDate?.toLocaleDateString('tr-TR') ?? 'Bilinmiyor'}\n- Check-out: ${guest.checkOutDate?.toLocaleDateString('tr-TR') ?? 'Bilinmiyor'}\n- Uyruk: ${guest.nationality ?? 'Bilinmiyor'}\n- Dil: ${guest.language}${(guest as any).isVip ? '\n- VIP Misafir: Öncelikli ilgi göster.' : ''}\n\nMisafirin diline göre yanıt ver (${guest.language}).`
 
     return basePrompt + timeContext + guestContext
   }
