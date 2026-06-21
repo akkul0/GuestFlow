@@ -74,7 +74,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
   // POST /hotels/:id/users
   app.post<{
     Params: { id: string }
-    Body: { username: string; email: string; password: string; firstName: string; lastName: string; role: string; language?: string; whatsappPhone?: string; departmentId?: string }
+    Body: { username: string; email?: string; password: string; firstName: string; lastName: string; role: string; language?: string; whatsappPhone?: string; departmentId?: string }
   }>('/:id/users', {
     schema: { tags: ['Hotels'], summary: 'Create a hotel user' },
     preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
@@ -82,11 +82,18 @@ export async function hotelsRoutes(app: FastifyInstance) {
       const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS ?? '12')
       const passwordHash = await bcrypt.hash(request.body.password, saltRounds)
 
+      // E-posta artık kullanıcıdan istenmiyor. Veritabanı zorunlu + benzersiz
+      // tuttuğu için, verilmezse kullanıcı adından dahili bir e-posta üretilir.
+      const emailValue =
+        request.body.email && request.body.email.trim().length > 0
+          ? request.body.email.trim()
+          : `${request.body.username}@stayline.local`
+
       const user = await app.prisma.user.create({
         data: {
           hotelId: request.params.id,
           username: request.body.username,
-          email: request.body.email,
+          email: emailValue,
           passwordHash,
           firstName: request.body.firstName,
           lastName: request.body.lastName,
