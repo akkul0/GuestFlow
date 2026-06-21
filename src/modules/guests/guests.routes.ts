@@ -16,6 +16,7 @@ const guestSchema = z.object({
   isVip: z.boolean().default(false),
   notes: z.string().optional(),
   roomId: z.string().uuid().optional(),
+  roomNumber: z.string().optional(),
   checkInDate: z.string().optional(),
   checkOutDate: z.string().optional(),
   reservationNo: z.string().optional(),
@@ -116,9 +117,22 @@ export async function guestsRoutes(app: FastifyInstance) {
         throw createError(409, 'A guest with this phone number already exists')
       }
 
+      // roomNumber verildiyse, o numaralı odayı bul ve roomId'ye çevir
+      let roomId = request.body.roomId
+      if (!roomId && request.body.roomNumber) {
+        const room = await app.prisma.room.findFirst({
+          where: { hotelId: request.user.hotelId, number: request.body.roomNumber.trim() },
+        })
+        if (room) roomId = room.id
+      }
+
+      // roomNumber alanını body'den çıkar (Prisma'da böyle bir alan yok)
+      const { roomNumber: _rn, ...guestData } = request.body
+
       const guest = await app.prisma.guest.create({
         data: {
-          ...request.body,
+          ...guestData,
+          roomId,
           phone,
           hotelId: request.user.hotelId,
           birthDate: request.body.birthDate ? new Date(request.body.birthDate) : undefined,
