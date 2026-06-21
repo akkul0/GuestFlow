@@ -402,6 +402,20 @@ export async function ordersRoutes(app: FastifyInstance) {
     },
   })
 
+  // DELETE /orders/:id — talebi sil
+  app.delete<{ Params: { id: string } }>('/:id', {
+    schema: { tags: ['Orders'], summary: 'Delete an order' },
+    handler: async (request, reply) => {
+      const hotelId = request.user.hotelId
+      const order = await app.prisma.order.findFirst({
+        where: { id: request.params.id, hotelId },
+      })
+      if (!order) throw createError(404, 'Talep bulunamadı')
+      await app.prisma.order.delete({ where: { id: order.id } })
+      return reply.send({ message: 'Talep silindi' })
+    },
+  })
+
   /* ════════════════════ VARDİYALAR (SHIFTS) ════════════════════ */
 
   // GET /orders/shifts?departmentId=...
