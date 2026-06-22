@@ -253,11 +253,21 @@ export class AiService {
     return now.toLocaleDateString('tr-TR', options)
   }
 
-  private async fetchImageAsBase64(url: string, twilioAuth: string): Promise<{ data: string; mediaType: string } | null> {
+  private async fetchImageAsBase64(url: string, authToken: string): Promise<{ data: string; mediaType: string } | null> {
     try {
       const headers: Record<string, string> = {}
-      if (url.includes('twilio.com') && twilioAuth) {
-        headers['Authorization'] = `Basic ${Buffer.from(twilioAuth).toString('base64')}`
+      if (url.includes('twilio.com') && authToken) {
+        // Twilio: HTTP Basic auth
+        headers['Authorization'] = `Basic ${Buffer.from(authToken).toString('base64')}`
+      } else if (
+        authToken &&
+        (url.includes('graph.facebook.com') ||
+          url.includes('fbsbx.com') ||
+          url.includes('whatsapp.net') ||
+          url.includes('fbcdn.net'))
+      ) {
+        // Meta WhatsApp Cloud API: Bearer token (medya URL'i token ister)
+        headers['Authorization'] = `Bearer ${authToken}`
       }
 
       const res = await fetch(url, { headers })
@@ -576,6 +586,72 @@ SADECE şu formatta JSON döndür (başka hiçbir şey yazma):
       }
     } catch {
       return { isRequest: false, isComplaint: false }
+    }
+  }
+
+  // Görseli (fotoğraf) Claude vision ile analiz eder: iş talebi mi, şikayet mi,
+  // ve KISA bir açıklama (örn. "bozuk klima fotoğrafı"). Caption (varsa) bağlam
+  // olarak verilir. Görsele erişilemezse veya analiz başarısızsa, çağıran taraf
+  // güvenli varsayıma düşebilsin diye null döner.
+  async analyzeImage(
+    imageUrl: string,
+    accessToken: string,
+    caption?: string,
+  ): Promise<{ isRequest: boolean; isComplaint: boolean; description: string } | null> {
+    try {
+      const img = await this.fetchImageAsBase64(imageUrl, accessToken)
+      if (!img || !img.mediaType.startsWith('image/')) return null
+
+      const captionLine =
+        caption && caption.trim().length > 0
+          ? `Misafirin fotoğrafla birlikte yazdığı not: "${caption.trim()}"
+
+`
+          : ''
+
+      const res = await this.client.messages.create({
+        model: FAST_MODEL,
+        max_tokens: 120,
+        system: `Sen bir otel mesaj analizcisisin. Misafirin GÖNDERDİĞİ FOTOĞRAFI değerlendir:
+
+1. "request": Personelin fiziksel AKSİYON alması gereken bir İŞ TALEBİ mi gösteriyor? (bozuk eşya, arızalı klima/TV/musluk, eksik havlu/malzeme, tıkanık lavabo, temizlik gereken alan, tamir gereken bir şey vb.)
+2. "complaint": Bir MEMNUNİYETSİZLİK / ŞİKAYET mi gösteriyor? (kirli/hasarlı oda, kötü durumdaki yemek, bozuk eşya, düzensizlik vb.)
+3. "description": Fotoğrafta NE OLDUĞUNU çok kısa (en fazla 8 kelime) Türkçe açıkla. Örnek: "Bozuk klima ünitesi", "Lavabo su sızdırıyor", "Kirli havlu".
+
+ÖNEMLİ:
+- Fotoğraf sadece bir manzara, selfie, yemek güzelliği veya alakasız bir şeyse: request:false, complaint:false, description:"Alakasız/sohbet fotoğrafı".
+- Bozuk/arızalı/eksik/kirli bir şey görüyorsan genelde hem request hem complaint olur.
+- Caption (not) varsa onu da dikkate al.
+
+SADECE şu formatta JSON döndür (başka hiçbir şey yazma):
+{"request": true/false, "complaint": true/false, "description": "..."}`,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: img.mediaType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+                  data: img.data,
+                },
+              },
+              { type: 'text', text: `${captionLine}Bu fotoğrafı analiz et ve JSON döndür.` },
+            ],
+          },
+        ],
+      })
+      const block = res.content[0]
+      const raw = block?.type === 'text' ? block.text.replace(/```json|```/g, '').trim() : '{}'
+      const parsed = JSON.parse(raw)
+      return {
+        isRequest: parsed.request === true,
+        isComplaint: parsed.complaint === true,
+        description: typeof parsed.description === 'string' ? parsed.description : '',
+      }
+    } catch {
+      return null
     }
   }
 
