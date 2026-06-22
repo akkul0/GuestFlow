@@ -592,12 +592,45 @@ export class ChatService {
       }
     }
 
-    // Medya varsa (fotoğraf) iş talebi say (bozuk eşya fotoğrafı gibi).
-    const isRequest = analysis.isRequest || hasMedia
+    // ── FOTOĞRAF ANALİZİ ──────────────────────────────────────────────
+    // Eskiden: medya varsa körlemesine "istek" sayılıyordu (yanlış — tatil
+    // fotoğrafı da istek oluyordu). Şimdi: fotoğrafı Claude vision ile GERÇEK
+    // analiz ediyoruz; bozuk/arızalı/eksik bir şey mi yoksa alakasız mı?
+    let imageDesc = ''
+    if (hasMedia && latestMediaUrl) {
+      const token = conversation.hotel?.waAccessToken ?? ''
+      const imgAnalysis = await this.aiService.analyzeImage(
+        latestMediaUrl,
+        token,
+        latestMessage,   // caption / yanındaki yazı (varsa) bağlam olsun
+      )
+      if (imgAnalysis) {
+        // Görsel başarıyla analiz edildi: sonucu metin analiziyle BİRLEŞTİR.
+        if (imgAnalysis.isRequest) analysis.isRequest = true
+        if (imgAnalysis.isComplaint) analysis.isComplaint = true
+        imageDesc = imgAnalysis.description || ''
+      } else {
+        // Görsele erişilemedi/analiz başarısız → GÜVENLİ varsayım: muhtemelen
+        // bir sorun bildiriyor (eski davranış), istek+şikayet say ki kaçmasın.
+        analysis.isRequest = true
+        analysis.isComplaint = true
+        imageDesc = 'Fotoğraf (otomatik analiz edilemedi)'
+      }
+    }
+
+    const isRequest = analysis.isRequest
     const isComplaint = analysis.isComplaint
 
-    // İkisi de değilse (selamlaşma, sohbet) → hiçbir şey yapma.
+    // İkisi de değilse (selamlaşma, sohbet, alakasız fotoğraf) → hiçbir şey yapma.
     if (!isRequest && !isComplaint) return
+
+    // Fotoğraf açıklamasını talep metnine ekle (Order Taker'da anlamlı görünsün).
+    // Örn. yazı yoksa talep metni boş kalmasın: "Bozuk klima ünitesi" yazsın.
+    if (imageDesc) {
+      effectiveText = effectiveText && effectiveText.trim().length > 0
+        ? `${effectiveText} (Fotoğraf: ${imageDesc})`
+        : `Fotoğraf: ${imageDesc}`
+    }
 
     // Oda numarasini bul:
     //  1) ÖNCE misafirin KAYITLI odasi (guest.room.number) — en güvenilir
@@ -642,7 +675,7 @@ export class ChatService {
     // Order Taker'a bildirim SADECE iş talebi varsa VE oda no varsa gider.
     // (Saf şikayet → sadece MGB'de görünür, Order Taker'a iş düşmez.)
     if (isRequest && roomNo) {
-      await this.notifyOrderTaker(conversation, latestMessage, roomNo, latestMediaUrl, savedOrder)
+      await this.notifyOrderTaker(conversation, effectiveText, roomNo, latestMediaUrl, savedOrder)
     }
   }
 
