@@ -55,6 +55,17 @@ export async function chatRoutes(app: FastifyInstance) {
     },
   )
 
+  // GET /chat/messages/:id/media — mesaj medyasını (foto/video/ses) proxy'le.
+  app.get<{ Params: { id: string } }>('/messages/:id/media', {
+    schema: { tags: ['Chat'], summary: 'Proxy a message media file' },
+    handler: async (request, reply) => {
+      const media = await chatService.getMessageMedia(request.user.hotelId, request.params.id)
+      if (!media) return reply.status(404).send({ message: 'Medya bulunamadı' })
+      reply.header('Cache-Control', 'private, max-age=3600')
+      return reply.type(media.contentType).send(media.buffer)
+    },
+  })
+
   // POST /chat/conversations/:id/messages
   app.post<{ Params: { id: string }; Body: any }>(
     '/conversations/:id/messages',

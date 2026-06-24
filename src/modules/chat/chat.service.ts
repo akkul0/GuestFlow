@@ -121,6 +121,47 @@ export class ChatService {
     return { items: items.reverse(), hasMore, nextCursor }
   }
 
+  // Bir mesajın medyasını (fotoğraf/video/ses/dosya) Meta'dan TOKEN ile indirip
+  // ham bayt + içerik tipiyle döndürür. Meta medya URL'leri token gerektirdiği
+  // ve geçici olduğu için tarayıcı doğrudan gösteremez; bu yüzden backend proxy'ler.
+  async getMessageMedia(
+    hotelId: string,
+    messageId: string,
+  ): Promise<{ buffer: Buffer; contentType: string } | null> {
+    const message = await this.app.prisma.message.findFirst({
+      where: { id: messageId, hotelId },
+      include: { conversation: { include: { hotel: true } } },
+    })
+    if (!message || !message.mediaUrl) return null
+
+    const token = message.conversation?.hotel?.waAccessToken ?? ''
+    try {
+      const headers: Record<string, string> = {}
+      const url = message.mediaUrl
+      if (
+        token &&
+        (url.includes('graph.facebook.com') ||
+          url.includes('fbsbx.com') ||
+          url.includes('whatsapp.net') ||
+          url.includes('fbcdn.net'))
+      ) {
+        headers['Authorization'] = `Bearer ${token}`
+      } else if (url.includes('twilio.com') && token) {
+        headers['Authorization'] = `Basic ${Buffer.from(token).toString('base64')}`
+      }
+
+      const res = await fetch(url, { headers })
+      if (!res.ok) return null
+
+      const contentType = res.headers.get('content-type') ?? 'application/octet-stream'
+      const arrayBuf = await res.arrayBuffer()
+      return { buffer: Buffer.from(arrayBuf), contentType: contentType.split(';')[0] }
+    } catch (err) {
+      this.app.log.error({ err }, 'Medya indirme başarısız')
+      return null
+    }
+  }
+
   async deleteConversation(hotelId: string, conversationId: string) {
     // Konuşma bu otele mi ait?
     const conv = await this.app.prisma.conversation.findFirst({
@@ -428,6 +469,21 @@ export class ChatService {
       conversation.deletedAt = null
     }
 
+    // ── SESLİ MESAJ TRANSKRİPTİ ───────────────────────────
+    // Ses (voice) geldiyse Groq Whisper ile metne çevir. Metni data.body'ye
+    // koyuyoruz ki sonraki adımlar (çeviri, AI yanıtı, talep algılama) normal
+    // metin mesajı gibi çalışsın. AMA contentType'ı AUDIO bırakıyoruz ki balonda
+    // ses oynatıcı da görünsün (hem ses dinlenir hem transkript okunur).
+    let isVoiceTranscript = false
+    if (data.contentType === 'AUDIO' && data.mediaUrl) {
+      const token = conversation.hotel?.waAccessToken ?? ''
+      const transcript = await this.aiService.transcribeAudio(data.mediaUrl, token)
+      if (transcript && transcript.trim().length > 0) {
+        data.body = transcript
+        isVoiceTranscript = true   // işlemede metin gibi davran (contentType AUDIO kalır)
+      }
+    }
+
     // ── Gelen mesaj cevirisi ──────────────────────────────
     // Misafir Turkce disinda yazdiysa: dilini tespit et, konusmaya kaydet,
     // mesaji Turkce'ye cevir (calisanin okumasi icin).
@@ -435,7 +491,7 @@ export class ChatService {
     let inboundOriginal: string | null = null
     let inboundFromLang: string | null = null
 
-    if (data.body && data.body.trim().length > 0 && data.contentType === 'TEXT') {
+    if (data.body && data.body.trim().length > 0 && (data.contentType === 'TEXT' || isVoiceTranscript)) {
       const detectedLang = await this.aiService.detectLanguage(data.body)
       // Misafir dili Turkce degilse cevir
       if (detectedLang && !detectedLang.startsWith('tr')) {
@@ -463,7 +519,7 @@ export class ChatService {
         hotelId,
         waMessageId: data.waMessageId,
         direction: MessageDirection.INBOUND,
-        contentType: data.contentType as 'TEXT',
+        contentType: data.contentType as any,
         body: inboundBody,
         bodyOriginal: inboundOriginal,
         translatedFrom: inboundFromLang,
@@ -507,7 +563,11 @@ export class ChatService {
       // ÇEVRİLMİŞ Türkçe metni gönderiyoruz (inboundBody) ki yabancı dildeki
       // talepler de doğru tespit edilsin. Orijinal yoksa inboundBody = data.body.
       if ((data.body && data.body.trim().length > 0) || data.mediaUrl) {
-        await this.checkAndNotifyOrderTaker(fullConversation, inboundBody ?? data.body ?? '', data.mediaUrl).catch((err) => {
+        // Ses transkriptinde medya URL'i GÖRSEL analize sokulmamalı (ses dosyası
+        // resim değil). Transkript zaten metin olarak gönderiliyor; o yüzden ses
+        // durumunda mediaUrl'i geçme. Foto/video'da normal geç.
+        const mediaForAnalysis = isVoiceTranscript ? undefined : data.mediaUrl
+        await this.checkAndNotifyOrderTaker(fullConversation, inboundBody ?? data.body ?? '', mediaForAnalysis).catch((err) => {
           this.app.log.error({ err }, 'Order taker notification failed')
         })
       }
