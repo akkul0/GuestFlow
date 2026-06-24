@@ -655,6 +655,63 @@ SADECE şu formatta JSON döndür (başka hiçbir şey yazma):
     }
   }
 
+  // Sesli mesajı (WhatsApp voice/audio) metne çevirir (Groq Whisper).
+  // Çok dillidir; Türkçe, Rusça, Arapça vb. otomatik algılar. Sesi Meta'dan
+  // TOKEN ile indirip Groq'a multipart olarak yollar. Başarısızsa null döner.
+  async transcribeAudio(audioUrl: string, accessToken: string): Promise<string | null> {
+    const groqKey = process.env.GROQ_API_KEY
+    if (!groqKey) {
+      this.app.log.warn('GROQ_API_KEY tanımlı değil; ses transkripti atlandı')
+      return null
+    }
+    try {
+      // 1) Sesi Meta'dan indir (Bearer token ile)
+      const headers: Record<string, string> = {}
+      if (
+        accessToken &&
+        (audioUrl.includes('graph.facebook.com') ||
+          audioUrl.includes('fbsbx.com') ||
+          audioUrl.includes('whatsapp.net') ||
+          audioUrl.includes('fbcdn.net'))
+      ) {
+        headers['Authorization'] = `Bearer ${accessToken}`
+      } else if (audioUrl.includes('twilio.com') && accessToken) {
+        headers['Authorization'] = `Basic ${Buffer.from(accessToken).toString('base64')}`
+      }
+      const audioRes = await fetch(audioUrl, { headers })
+      if (!audioRes.ok) return null
+      const audioBuf = Buffer.from(await audioRes.arrayBuffer())
+      const audioType = (audioRes.headers.get('content-type') ?? 'audio/ogg').split(';')[0]
+
+      // 2) Groq Whisper'a multipart gönder
+      const form = new FormData()
+      const ext = audioType.includes('mp3') ? 'mp3'
+        : audioType.includes('mp4') || audioType.includes('m4a') ? 'm4a'
+        : audioType.includes('wav') ? 'wav'
+        : audioType.includes('webm') ? 'webm'
+        : 'ogg'
+      form.append('file', new Blob([audioBuf], { type: audioType }), `audio.${ext}`)
+      form.append('model', 'whisper-large-v3')
+      // response_format text → düz metin döner
+      form.append('response_format', 'text')
+
+      const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${groqKey}` },
+        body: form,
+      })
+      if (!res.ok) {
+        this.app.log.error({ status: res.status }, 'Groq transkript başarısız')
+        return null
+      }
+      const text = (await res.text()).trim()
+      return text.length > 0 ? text : null
+    } catch (err) {
+      this.app.log.error({ err }, 'Ses transkripti hatası')
+      return null
+    }
+  }
+
   async isServiceRequest(text: string): Promise<boolean> {
     try {
       const res = await this.client.messages.create({
