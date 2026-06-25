@@ -223,6 +223,8 @@ model Message {
   translatedFrom String?       // source language
   mediaUrl       String?
   mediaCaption   String?
+  mediaData      String?   @db.Text   // base64 medya (kalıcı; Meta URL'i 5dk'da ölür)
+  mediaMimeType  String?              // örn. image/jpeg, audio/ogg, video/mp4
   templateName   String?
   templateData   Json?
   status         MessageStatus @default(SENT)
