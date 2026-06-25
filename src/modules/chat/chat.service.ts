@@ -469,18 +469,28 @@ export class ChatService {
       conversation.deletedAt = null
     }
 
-    // ── SESLİ MESAJ TRANSKRİPTİ ───────────────────────────
-    // Ses (voice) geldiyse Groq Whisper ile metne çevir. Metni data.body'ye
-    // koyuyoruz ki sonraki adımlar (çeviri, AI yanıtı, talep algılama) normal
-    // metin mesajı gibi çalışsın. AMA contentType'ı AUDIO bırakıyoruz ki balonda
-    // ses oynatıcı da görünsün (hem ses dinlenir hem transkript okunur).
+    // ── SES / VİDEO TRANSKRİPTİ ───────────────────────────
+    // Ses (voice) VEYA video geldiyse Groq Whisper ile içindeki konuşmayı metne
+    // çevir (Groq mp4/ogg/m4a kabul eder — video dosyasından da ses çıkarır).
+    // Transkripti data.body'ye koyuyoruz ki sonraki adımlar (çeviri, AI yanıtı,
+    // talep algılama) normal metin mesajı gibi çalışsın. contentType'ı AUDIO/VIDEO
+    // bırakıyoruz ki balonda oynatıcı da görünsün.
+    //
+    // Video mantığı:
+    //  - Videonun SESİ varsa → metne çevrilir, olay sesten anlaşılır.
+    //  - Ses yoksa/boşsa → transkript boş kalır; video yine medya analizine
+    //    girer (aşağıda checkAndNotifyOrderTaker'da görsel/güvenli değerlendirme).
     let isVoiceTranscript = false
-    if (data.contentType === 'AUDIO' && data.mediaUrl) {
+    if ((data.contentType === 'AUDIO' || data.contentType === 'VIDEO') && data.mediaUrl) {
       const token = conversation.hotel?.waAccessToken ?? ''
       const transcript = await this.aiService.transcribeAudio(data.mediaUrl, token)
       if (transcript && transcript.trim().length > 0) {
-        data.body = transcript
-        isVoiceTranscript = true   // işlemede metin gibi davran (contentType AUDIO kalır)
+        // Video'da hem caption (varsa) hem konuşma olabilir; ikisini birleştir.
+        const caption = (data.body ?? '').trim()
+        data.body = caption && caption !== transcript
+          ? `${caption}. ${transcript}`
+          : transcript
+        isVoiceTranscript = true   // işlemede metin gibi davran
       }
     }
 
