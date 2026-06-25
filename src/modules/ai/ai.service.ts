@@ -761,6 +761,61 @@ Return ONLY valid JSON (no markdown, no explanation) with these exact keys:
    * departments: [{ id, key, name, keywords }]
    * Döner: eşleşen departmanın { id, key, name } veya null (hiçbiri uymadıysa).
    */
+  // Birden çok Google yorumunu TEK AI çağrısında analiz eder (minimum maliyet).
+  // Her yorum için: tip (övgü/şikayet/nötr), şiddet (1-3), departman, ve Türkçe
+  // çeviri (yorum yabancıysa). Girdi sırası korunur (index ile eşleşir).
+  async analyzeReviews(
+    reviews: { text: string; rating: number }[],
+  ): Promise<
+    Array<{
+      sentiment: 'praise' | 'complaint' | 'neutral'
+      severity: number
+      department: string
+      translation: string | null
+    }>
+  > {
+    if (reviews.length === 0) return []
+    try {
+      const numbered = reviews
+        .map((r, i) => `[${i}] (puan: ${r.rating}/5) ${(r.text ?? '').slice(0, 500)}`)
+        .join('\n')
+
+      const res = await this.client.messages.create({
+        model: FAST_MODEL,
+        max_tokens: Math.min(4000, 200 + reviews.length * 80),
+        system: `Sen bir otel yorum analistisin. Sana numaralı Google yorumları verilecek. HER yorum için şunları belirle:
+
+- "sentiment": "praise" (övgü/olumlu), "complaint" (şikayet/olumsuz) veya "neutral" (nötr/karışık).
+- "severity": şikayetse şiddeti → 1 (hafif), 2 (orta), 3 (ciddi). Şikayet değilse 0.
+- "department": yorumun ilgili olduğu departman. ŞUNLARDAN BİRİ: "HOUSEKEEPING" (temizlik/oda düzeni), "FB" (yemek/restoran/bar), "RECEPTION" (resepsiyon/check-in/personel ilgisi), "TECHNICAL" (klima/su/elektrik/arıza), "FACILITIES" (havuz/spa/genel tesis), "GENERAL" (genel/spesifik değil).
+- "translation": Yorum TÜRKÇE DEĞİLSE Türkçe çevirisi. Yorum zaten Türkçeyse null.
+
+SADECE şu formatta, yorum sayısı kadar elemanlı bir JSON dizi döndür (başka hiçbir şey yazma):
+[{"sentiment":"...","severity":0,"department":"...","translation":"..."}]
+
+Dizinin sırası girdi sırasıyla AYNI olmalı.`,
+        messages: [{ role: 'user', content: numbered }],
+      })
+      const block = res.content[0]
+      const raw = block?.type === 'text' ? block.text.replace(/```json|```/g, '').trim() : '[]'
+      const parsed = JSON.parse(raw)
+      if (!Array.isArray(parsed)) return []
+      return reviews.map((_, i) => {
+        const r = parsed[i] ?? {}
+        const sentiment = ['praise', 'complaint', 'neutral'].includes(r.sentiment) ? r.sentiment : 'neutral'
+        return {
+          sentiment,
+          severity: sentiment === 'complaint' ? (Number(r.severity) >= 1 && Number(r.severity) <= 3 ? Number(r.severity) : 2) : 0,
+          department: typeof r.department === 'string' ? r.department : 'GENERAL',
+          translation: typeof r.translation === 'string' && r.translation.trim() ? r.translation.trim() : null,
+        }
+      })
+    } catch (err) {
+      this.app.log.error({ err }, 'Yorum analizi başarısız')
+      return reviews.map(() => ({ sentiment: 'neutral' as const, severity: 0, department: 'GENERAL', translation: null }))
+    }
+  }
+
   async matchDepartment(
     text: string,
     departments: { id: string; key: string; name: string; keywords?: string | null }[],
