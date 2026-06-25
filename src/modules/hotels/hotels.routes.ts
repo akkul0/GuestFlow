@@ -27,7 +27,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
         select: {
           id: true, name: true, slug: true, phone: true, email: true, timezone: true,
           locale: true, aiEnabled: true, aiModel: true, aiSystemPrompt: true, autoTranslate: true,
-          waPhoneNumberId: true, waBusinessId: true,
+          waPhoneNumberId: true, waBusinessId: true, googlePlaceId: true,
           // Never return waAccessToken or waWebhookSecret
         },
       })
@@ -44,6 +44,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
       name?: string; phone?: string; email?: string; timezone?: string
       aiEnabled?: boolean; aiModel?: string; aiSystemPrompt?: string; autoTranslate?: boolean
       waPhoneNumberId?: string; waBusinessId?: string; waAccessToken?: string; waWebhookSecret?: string
+      googlePlaceId?: string
     }
   }>('/:id/settings', {
     schema: { tags: ['Hotels'], summary: 'Update hotel settings' },
