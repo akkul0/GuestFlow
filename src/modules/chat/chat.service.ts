@@ -132,8 +132,21 @@ export class ChatService {
       where: { id: messageId, hotelId },
       include: { conversation: { include: { hotel: true } } },
     })
-    if (!message || !message.mediaUrl) return null
+    if (!message) return null
 
+    // 1) ÖNCELİK: DB'de saklı base64 medya (kalıcı, her zaman çalışır).
+    if ((message as any).mediaData) {
+      try {
+        const buffer = Buffer.from((message as any).mediaData, 'base64')
+        const contentType = (message as any).mediaMimeType ?? 'application/octet-stream'
+        return { buffer, contentType }
+      } catch {
+        // base64 bozuksa aşağıda URL denemesine düş
+      }
+    }
+
+    // 2) YEDEK: DB'de yoksa Meta URL'inden dene (eski mesajlar; URL ölmüş olabilir).
+    if (!message.mediaUrl) return null
     const token = message.conversation?.hotel?.waAccessToken ?? ''
     try {
       const headers: Record<string, string> = {}
@@ -158,6 +171,38 @@ export class ChatService {
       return { buffer: Buffer.from(arrayBuf), contentType: contentType.split(';')[0] }
     } catch (err) {
       this.app.log.error({ err }, 'Medya indirme başarısız')
+      return null
+    }
+  }
+
+  // Medyayı Meta'dan (token ile) indirip base64 + mime döndürür. Mesaj geldiği
+  // anda çağrılır (URL tazeyken) ki kalıcı saklayabilelim.
+  private async downloadMediaBase64(
+    url: string,
+    token: string,
+  ): Promise<{ data: string; mimeType: string } | null> {
+    try {
+      const headers: Record<string, string> = {}
+      if (
+        token &&
+        (url.includes('graph.facebook.com') ||
+          url.includes('fbsbx.com') ||
+          url.includes('whatsapp.net') ||
+          url.includes('fbcdn.net'))
+      ) {
+        headers['Authorization'] = `Bearer ${token}`
+      } else if (url.includes('twilio.com') && token) {
+        headers['Authorization'] = `Basic ${Buffer.from(token).toString('base64')}`
+      }
+      const res = await fetch(url, { headers })
+      if (!res.ok) return null
+      const mimeType = (res.headers.get('content-type') ?? 'application/octet-stream').split(';')[0]
+      const buf = Buffer.from(await res.arrayBuffer())
+      // Aşırı büyük dosyaları DB'ye yazma (örn. >20MB) — güvenlik sınırı.
+      if (buf.length > 20 * 1024 * 1024) return null
+      return { data: buf.toString('base64'), mimeType }
+    } catch (err) {
+      this.app.log.error({ err }, 'Medya base64 indirme başarısız')
       return null
     }
   }
@@ -522,6 +567,21 @@ export class ChatService {
       }
     }
 
+    // Medyayı KALICI sakla: Meta CDN URL'i ~5dk sonra ölür, o yüzden mesaj
+    // gelir gelmez (URL tazeyken) indirip base64 olarak DB'ye yazıyoruz.
+    let mediaData: string | null = null
+    let mediaMimeType: string | null = null
+    if (data.mediaUrl) {
+      const dl = await this.downloadMediaBase64(
+        data.mediaUrl,
+        conversation.hotel?.waAccessToken ?? '',
+      )
+      if (dl) {
+        mediaData = dl.data
+        mediaMimeType = dl.mimeType
+      }
+    }
+
     // Save message
     const message = await this.app.prisma.message.create({
       data: {
@@ -534,6 +594,8 @@ export class ChatService {
         bodyOriginal: inboundOriginal,
         translatedFrom: inboundFromLang,
         mediaUrl: data.mediaUrl,
+        mediaData,
+        mediaMimeType,
         status: MessageStatus.DELIVERED,
         deliveredAt: new Date(),
       },
