@@ -12,19 +12,9 @@ export async function reviewsRoutes(app: FastifyInstance) {
   app.post('/analyze', {
     schema: { tags: ['Reviews'], summary: 'Fetch & analyze Google reviews' },
     handler: async (request, reply) => {
-      const { hotelId } = request.user
-
-      // 1) Otelin Google Place ID'sini al (Ayarlar'dan girilir)
-      const hotel = await app.prisma.hotel.findUnique({
-        where: { id: hotelId },
-        select: { googlePlaceId: true },
-      })
-      const placeId = (hotel as any)?.googlePlaceId
-      if (!placeId) {
-        return reply.status(400).send({
-          message: 'Google Place ID tanımlı değil. Lütfen Ayarlar bölümünden ekleyin.',
-        })
-      }
+      // Google Place ID — koda gömülü (The X Belek).
+      // İleride değiştirmek istersen sadece bu satırı güncelle.
+      const placeId = 'ChIJU_8aZJZ9wxQRH9FU58Mnzw0'
 
       const apiKey = process.env.OUTSCRAPER_API_KEY
       if (!apiKey) {
