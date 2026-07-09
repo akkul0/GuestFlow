@@ -27,6 +27,15 @@ export class WhatsAppService {
       templateData?: Record<string, unknown> | null
     },
   ): Promise<string> {
+    // ── TELEGRAM YÖNLENDİRMESİ ────────────────────────────────
+    // Telegram konuşmaları waContactId'de "tg:" önekiyle saklanır
+    // (örn. "tg:123456789"). Bu önek görülürse mesaj WhatsApp yerine
+    // Telegram Bot API üzerinden gönderilir. Böylece AI cevabı, admin
+    // paneli mesajları ve çeviri — hepsi kanala göre doğru yere gider.
+    if (conversation.waContactId.startsWith('tg:')) {
+      return this.sendTelegramMessage(conversation.waContactId.slice(3), payload.body ?? '')
+    }
+
     const { waPhoneNumberId, waAccessToken } = conversation.hotel
 
     if (!waPhoneNumberId || !waAccessToken) {
@@ -63,6 +72,28 @@ export class WhatsAppService {
       const metaError = axiosErr.response?.data?.error?.message ?? 'Unknown Meta API error'
       this.app.log.error({ err: axiosErr.response?.data }, 'Meta sendMessage failed')
       throw createError(502, metaError)
+    }
+  }
+
+  // Telegram Bot API ile mesaj gönderir. TELEGRAM_BOT_TOKEN env'den okunur.
+  private async sendTelegramMessage(chatId: string, text: string): Promise<string> {
+    const token = process.env.TELEGRAM_BOT_TOKEN
+    if (!token) {
+      throw createError(503, 'Telegram not configured (TELEGRAM_BOT_TOKEN missing)')
+    }
+    try {
+      const res = await this.client.post(
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        { chat_id: chatId, text },
+      )
+      // Telegram response: { ok: true, result: { message_id: 123 } }
+      const msgId = res.data?.result?.message_id
+      return msgId ? `tg-out-${msgId}` : 'tg-out-unknown'
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { description?: string } } }
+      const desc = axiosErr.response?.data?.description ?? 'Unknown Telegram API error'
+      this.app.log.error({ err: axiosErr.response?.data }, 'Telegram sendMessage failed')
+      throw createError(502, desc)
     }
   }
 
