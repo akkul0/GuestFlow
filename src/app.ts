@@ -21,6 +21,7 @@ import { hotelsRoutes } from './modules/hotels/hotels.routes'
 import { aiRoutes } from './modules/ai/ai.routes'
 import { ordersRoutes } from './modules/orders/orders.routes'
 import { reviewsRoutes } from './modules/reviews/reviews.routes'
+import { telegramRoutes } from './modules/telegram/telegram.routes'
 
 export async function buildApp() {
   const app = Fastify({
@@ -101,6 +102,7 @@ export async function buildApp() {
   await app.register(aiRoutes, { prefix: `${prefix}/ai` })
   await app.register(ordersRoutes, { prefix: `${prefix}/orders` })
   await app.register(reviewsRoutes, { prefix: `${prefix}/reviews` })
+  await app.register(telegramRoutes, { prefix: `${prefix}/telegram` })
 
   // ── Health Check ─────────────────────────────
   app.get('/health', async () => ({
