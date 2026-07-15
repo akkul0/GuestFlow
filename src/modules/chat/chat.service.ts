@@ -282,6 +282,32 @@ export class ChatService {
     })
     if (!conversation) throw createError(404, 'Conversation not found')
 
+    // ── WHATSAPP 24 SAAT PENCERESİ ────────────────────────
+    // WhatsApp kuralı: misafir son 24 saat içinde yazmadıysa ona SERBEST
+    // metin gönderilemez; yalnızca Meta'da onaylanmış bir şablon gidebilir.
+    // Meta bu mesajı API'de KABUL EDER (200 + wamid), sonra webhook ile
+    // sessizce "failed" (kod 131047) işaretler — yani panel "gönderildi"
+    // gösterir ama mesaj asla ulaşmaz. Bu yüzden peşinen kontrol edip
+    // kullanıcıya net sebebi söylüyoruz.
+    // Telegram'da böyle bir sınır yok; şablon mesajları da pencereden muaf.
+    const isTelegramConv = conversation.waContactId.startsWith('tg:')
+    if (!isTelegramConv && !body.templateName) {
+      const lastInbound = await this.app.prisma.message.findFirst({
+        where: { conversationId, direction: MessageDirection.INBOUND },
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true },
+      })
+      const elapsed = lastInbound
+        ? Date.now() - lastInbound.createdAt.getTime()
+        : Number.POSITIVE_INFINITY
+      if (elapsed > 24 * 60 * 60 * 1000) {
+        throw createError(
+          409,
+          'WhatsApp 24 saat kuralı: Misafir son 24 saattir yazmadığı için serbest mesaj gönderilemiyor. WhatsApp bu mesajı iletmez. Misafire ulaşmak için Meta\'da onaylanmış bir şablon mesajı kullanmanız gerekir.',
+        )
+      }
+    }
+
     // ── Giden mesaj cevirisi ──────────────────────────────
     // Calisan Turkce yazar. Misafirin dili Turkce degilse, mesaji misafirin
     // diline cevir. Orijinal Turkce'yi sakla (panelde calisan gorur),
