@@ -88,6 +88,20 @@ export async function whatsappRoutes(app: FastifyInstance) {
               const err = st.errors?.[0]
               updateData.errorMessage = err?.title ?? err?.message ?? 'Bilinmeyen hata'
               updateData.errorCode = err?.code ? String(err.code) : null
+              // ÖNEMLİ: Meta mesajı önce kabul edip SONRA burada başarısız
+              // bildirebilir. Loglamazsak sebep görünmez ("mesaj gitmiyor"
+              // ama logda hata yok). Kod 131047 = 24 saat penceresi kapalı.
+              app.log.warn(
+                {
+                  waId,
+                  code: err?.code,
+                  title: err?.title,
+                  details: err?.error_data?.details,
+                },
+                err?.code === 131047
+                  ? 'WhatsApp iletemedi: 24 saat penceresi kapalı (şablon gerekir)'
+                  : 'WhatsApp mesajı Meta tarafından iletilemedi',
+              )
             }
 
             if (newStatus) {

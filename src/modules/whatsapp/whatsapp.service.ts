@@ -48,15 +48,48 @@ export class WhatsAppService {
     const apiVersion = process.env.WA_API_VERSION ?? 'v21.0'
     const url = `https://graph.facebook.com/${apiVersion}/${waPhoneNumberId}/messages`
 
-    try {
-      const res = await this.client.post(
-        url,
-        {
+    // ── ŞABLON mı, serbest metin mi? ──────────────────────────
+    // 24 saat penceresi kapalıyken (misafir 24 saattir yazmadıysa) WhatsApp
+    // YALNIZCA Meta'da onaylanmış şablon mesajlarını iletir. templateName
+    // verilmişse şablon gövdesi kurulur; verilmemişse normal metin gider.
+    const td = (payload.templateData ?? {}) as {
+      language?: string
+      variables?: unknown[]
+      params?: unknown[]
+    }
+    const templateVars = (td.variables ?? td.params ?? []) as unknown[]
+    const messageBody = payload.templateName
+      ? {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'template',
+          template: {
+            name: payload.templateName,
+            language: { code: td.language ?? 'tr' },
+            ...(templateVars.length > 0 && {
+              components: [
+                {
+                  type: 'body',
+                  parameters: templateVars.map((v) => ({
+                    type: 'text',
+                    text: String(v ?? ''),
+                  })),
+                },
+              ],
+            }),
+          },
+        }
+      : {
           messaging_product: 'whatsapp',
           to,
           type: 'text',
           text: { body: payload.body ?? '' },
-        },
+        }
+
+    try {
+      const res = await this.client.post(
+        url,
+        messageBody,
         {
           headers: {
             'Content-Type': 'application/json',
@@ -68,9 +101,26 @@ export class WhatsAppService {
       // Meta response: { messages: [{ id: "wamid.xxx" }] }
       return res.data?.messages?.[0]?.id ?? 'unknown'
     } catch (err: unknown) {
-      const axiosErr = err as { response?: { data?: { error?: { message?: string } } } }
-      const metaError = axiosErr.response?.data?.error?.message ?? 'Unknown Meta API error'
-      this.app.log.error({ err: axiosErr.response?.data }, 'Meta sendMessage failed')
+      const axiosErr = err as {
+        response?: {
+          data?: {
+            error?: { message?: string; code?: number; error_data?: { details?: string } }
+          }
+        }
+      }
+      const metaErr = axiosErr.response?.data?.error
+      const metaError = metaErr?.message ?? 'Unknown Meta API error'
+      this.app.log.error(
+        { err: axiosErr.response?.data, code: metaErr?.code, details: metaErr?.error_data?.details },
+        'Meta sendMessage failed',
+      )
+      // 131047 = 24 saat penceresi kapalı (yeniden etkileşim mesajı gerekir)
+      if (metaErr?.code === 131047) {
+        throw createError(
+          409,
+          'WhatsApp 24 saat kuralı: Misafir 24 saattir yazmadığı için serbest mesaj iletilemiyor. Onaylı bir şablon mesajı kullanın.',
+        )
+      }
       throw createError(502, metaError)
     }
   }
