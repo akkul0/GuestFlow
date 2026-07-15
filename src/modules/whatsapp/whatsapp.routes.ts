@@ -186,6 +186,83 @@ export async function whatsappRoutes(app: FastifyInstance) {
     },
   })
 
+  // ── META'DAKİ ONAYLI ŞABLONLAR ──────────────────────────
+  // 24 saat penceresi kapalıyken (misafir 24 saattir yazmadıysa) YALNIZCA
+  // Meta'da onaylanmış şablonlar iletilir. Bu uç, otelin WhatsApp Business
+  // hesabındaki şablonları CANLI çeker — panelde tahmin yok, gerçek liste.
+  app.get('/meta-templates', {
+    schema: { tags: ['WhatsApp'], summary: "List approved templates from Meta" },
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const user = request.user as any
+      const hotel = await app.prisma.hotel.findUnique({
+        where: { id: user.hotelId },
+        select: { waBusinessId: true, waAccessToken: true },
+      })
+      if (!hotel?.waBusinessId || !hotel?.waAccessToken) {
+        return reply.status(400).send({
+          message:
+            'WhatsApp Business hesabı tanımlı değil (waBusinessId / waAccessToken eksik).',
+        })
+      }
+
+      const apiVersion = process.env.WA_API_VERSION ?? 'v21.0'
+      const url =
+        `https://graph.facebook.com/${apiVersion}/${hotel.waBusinessId}` +
+        `/message_templates?limit=100`
+
+      let payload: any
+      try {
+        const res = await fetch(url, {
+          headers: { Authorization: `Bearer ${hotel.waAccessToken}` },
+        })
+        payload = await res.json()
+        if (!res.ok) {
+          app.log.error({ status: res.status, payload }, 'Meta şablon listesi alınamadı')
+          return reply.status(502).send({
+            message: payload?.error?.message ?? 'Şablonlar Meta’dan alınamadı.',
+          })
+        }
+      } catch (err) {
+        app.log.error({ err }, 'Meta şablon isteği hatası')
+        return reply.status(502).send({ message: 'Şablonlar alınamadı.' })
+      }
+
+      // Meta yanıtı: { data: [{ name, language, status, category, components:[...] }] }
+      const list = Array.isArray(payload?.data) ? payload.data : []
+      const items = list
+        // Yalnızca ONAYLI şablonlar gönderilebilir
+        .filter((t: any) => String(t?.status ?? '').toUpperCase() === 'APPROVED')
+        .map((t: any) => {
+          const comps: any[] = Array.isArray(t.components) ? t.components : []
+          const pick = (type: string) =>
+            comps.find((x) => String(x?.type ?? '').toUpperCase() === type)
+          const bodyComp = pick('BODY')
+          const bodyText: string = bodyComp?.text ?? ''
+          // {{1}}, {{2}} ... değişkenlerini say (en büyük indeks = değişken sayısı)
+          const nums = [...bodyText.matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map((m) =>
+            Number(m[1]),
+          )
+          const variableCount = nums.length ? Math.max(...nums) : 0
+          const headerComp = pick('HEADER')
+          return {
+            name: t.name as string,
+            language: t.language as string,
+            category: t.category ?? null,
+            bodyText,
+            variableCount,
+            headerText:
+              String(headerComp?.format ?? '').toUpperCase() === 'TEXT'
+                ? (headerComp?.text ?? null)
+                : null,
+            footerText: pick('FOOTER')?.text ?? null,
+          }
+        })
+
+      return reply.send({ items })
+    },
+  })
+
   // ── Template Management ─────────────────────────────────
   app.get('/templates', {
     schema: { tags: ['WhatsApp'], summary: 'List message templates' },
