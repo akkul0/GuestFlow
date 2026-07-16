@@ -173,7 +173,121 @@ export async function reportsRoutes(app: FastifyInstance) {
     handler: async (request, reply) => {
       const hotelId = request.user.hotelId
       // Dönem: today | 7d | 30d (varsayılan 7d)
-      const period = request.query.period ?? '7d'
+      const period = (request.query.period ?? '7d') as 'today' | '7d' | '30d'
+      // Hesap computeMgbData'da — gece PDF raporu (cron) da aynı fonksiyonu
+      // kullanır; panel ile mail HER ZAMAN aynı rakamları gösterir.
+      const data = await computeMgbData(app, hotelId, period)
+      return reply.send(data)
+    },
+  })
+
+  // POST /reports/daily/generate — manually trigger daily report generation
+
+  app.post('/daily/generate', {
+    schema: { tags: ['Reports'], summary: 'Manually generate daily report for today' },
+    preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
+    handler: async (request, reply) => {
+      const report = await generateDailyReport(app, request.user.hotelId)
+      return reply.send(report)
+    },
+  })
+}
+
+// Her rapor satırına o günkü yeni misafir (check-in) sayısını ekler.
+async function enrichWithNewGuests(app: FastifyInstance, hotelId: string, reports: any[]) {
+  return Promise.all(
+    reports.map(async (r) => {
+      const dayStart = dayjs(r.date).startOf('day').toDate()
+      const dayEnd = dayjs(r.date).endOf('day').toDate()
+      const newGuests = await app.prisma.guest.count({
+        where: { hotelId, checkInDate: { gte: dayStart, lte: dayEnd } },
+      })
+      return { ...r, newGuests }
+    }),
+  )
+}
+
+export async function generateDailyReport(app: FastifyInstance, hotelId: string, date = new Date()) {
+  const startOfDay = dayjs(date).startOf('day').toDate()
+  const endOfDay = dayjs(date).endOf('day').toDate()
+  const today = dayjs(date).startOf('day').toDate()
+
+  const [totalRooms, checkinGuests, messageStats, templateCounts, failureCounts, aiCount] = await Promise.all([
+    app.prisma.room.count({ where: { hotelId, isActive: true } }),
+    app.prisma.guest.findMany({
+      where: { hotelId, isActive: true, checkInDate: { lte: endOfDay }, checkOutDate: { gte: startOfDay } },
+      select: { phone: true },
+    }),
+    app.prisma.message.groupBy({
+      by: ['direction', 'status'],
+      where: { hotelId, createdAt: { gte: startOfDay, lte: endOfDay } },
+      _count: { id: true },
+    }),
+    app.prisma.message.groupBy({
+      by: ['templateName'],
+      where: { hotelId, templateName: { not: null }, createdAt: { gte: startOfDay, lte: endOfDay } },
+      _count: { id: true },
+    }),
+    app.prisma.message.groupBy({
+      by: ['errorMessage'],
+      where: { hotelId, status: 'FAILED', createdAt: { gte: startOfDay, lte: endOfDay } },
+      _count: { id: true },
+    }),
+    app.prisma.message.count({
+      where: { hotelId, isAiGenerated: true, createdAt: { gte: startOfDay, lte: endOfDay } },
+    }),
+  ])
+
+  const checkinRooms = checkinGuests.length
+  const phoneRooms = checkinGuests.filter((g) => g.phone?.length > 5).length
+  const noPhoneRooms = checkinRooms - phoneRooms
+
+  let sent = 0, delivered = 0, failed = 0, received = 0
+  for (const stat of messageStats) {
+    if (stat.direction === 'OUTBOUND') {
+      sent += stat._count.id
+      if (['DELIVERED', 'READ'].includes(stat.status)) delivered += stat._count.id
+      if (stat.status === 'FAILED') failed += stat._count.id
+    } else {
+      received += stat._count.id
+    }
+  }
+
+  const templateBreakdown = Object.fromEntries(
+    templateCounts.filter((t) => t.templateName).map((t) => [t.templateName, t._count.id]),
+  )
+  const failureReasons = Object.fromEntries(
+    failureCounts.filter((f) => f.errorMessage).map((f) => [f.errorMessage, f._count.id]),
+  )
+
+  const reachedRooms = await app.prisma.conversation.count({
+    where: { hotelId, messages: { some: { direction: 'INBOUND', createdAt: { gte: startOfDay, lte: endOfDay } } } },
+  })
+
+  return app.prisma.dailyReport.upsert({
+    where: { hotelId_date: { hotelId, date: today } },
+    update: {
+      totalRooms, checkinRooms, phoneRooms, noPhoneRooms, messagesSent: sent,
+      messagesDelivered: delivered, messagesFailed: failed, messagesReceived: received,
+      aiMessagesGenerated: aiCount, reachedRooms, unreachedRooms: Math.max(checkinRooms - reachedRooms, 0),
+      templateBreakdown, failureReasons,
+    },
+    create: {
+      hotelId, date: today, totalRooms, checkinRooms, phoneRooms, noPhoneRooms,
+      messagesSent: sent, messagesDelivered: delivered, messagesFailed: failed, messagesReceived: received,
+      aiMessagesGenerated: aiCount, reachedRooms, unreachedRooms: Math.max(checkinRooms - reachedRooms, 0),
+      templateBreakdown, failureReasons,
+    },
+  })
+}
+
+// MGB (Misafir Geri Bildirimi) verisini hesaplar.
+// Panel endpoint'i ve gece PDF raporu (cron) ortak kullanır.
+export async function computeMgbData(
+  app: FastifyInstance,
+  hotelId: string,
+  period: 'today' | '7d' | '30d',
+) {
       const days = period === 'today' ? 1 : period === '30d' ? 30 : 7
       const start = dayjs().subtract(days - 1, 'day').startOf('day').toDate()
       const end = new Date()
@@ -300,7 +414,7 @@ export async function reportsRoutes(app: FastifyInstance) {
         }))
         .slice(0, 50)
 
-      return reply.send({
+      return {
         summary: {
           occupancyPct,
           guestsReached: reachedConvs,
@@ -312,105 +426,6 @@ export async function reportsRoutes(app: FastifyInstance) {
         nationalities,
         topRooms,
         complaints,
-      })
-    },
-  })
-
-  // POST /reports/daily/generate — manually trigger daily report generation
-  app.post('/daily/generate', {
-    schema: { tags: ['Reports'], summary: 'Manually generate daily report for today' },
-    preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
-    handler: async (request, reply) => {
-      const report = await generateDailyReport(app, request.user.hotelId)
-      return reply.send(report)
-    },
-  })
+      }
 }
 
-// Her rapor satırına o günkü yeni misafir (check-in) sayısını ekler.
-async function enrichWithNewGuests(app: FastifyInstance, hotelId: string, reports: any[]) {
-  return Promise.all(
-    reports.map(async (r) => {
-      const dayStart = dayjs(r.date).startOf('day').toDate()
-      const dayEnd = dayjs(r.date).endOf('day').toDate()
-      const newGuests = await app.prisma.guest.count({
-        where: { hotelId, checkInDate: { gte: dayStart, lte: dayEnd } },
-      })
-      return { ...r, newGuests }
-    }),
-  )
-}
-
-export async function generateDailyReport(app: FastifyInstance, hotelId: string, date = new Date()) {
-  const startOfDay = dayjs(date).startOf('day').toDate()
-  const endOfDay = dayjs(date).endOf('day').toDate()
-  const today = dayjs(date).startOf('day').toDate()
-
-  const [totalRooms, checkinGuests, messageStats, templateCounts, failureCounts, aiCount] = await Promise.all([
-    app.prisma.room.count({ where: { hotelId, isActive: true } }),
-    app.prisma.guest.findMany({
-      where: { hotelId, isActive: true, checkInDate: { lte: endOfDay }, checkOutDate: { gte: startOfDay } },
-      select: { phone: true },
-    }),
-    app.prisma.message.groupBy({
-      by: ['direction', 'status'],
-      where: { hotelId, createdAt: { gte: startOfDay, lte: endOfDay } },
-      _count: { id: true },
-    }),
-    app.prisma.message.groupBy({
-      by: ['templateName'],
-      where: { hotelId, templateName: { not: null }, createdAt: { gte: startOfDay, lte: endOfDay } },
-      _count: { id: true },
-    }),
-    app.prisma.message.groupBy({
-      by: ['errorMessage'],
-      where: { hotelId, status: 'FAILED', createdAt: { gte: startOfDay, lte: endOfDay } },
-      _count: { id: true },
-    }),
-    app.prisma.message.count({
-      where: { hotelId, isAiGenerated: true, createdAt: { gte: startOfDay, lte: endOfDay } },
-    }),
-  ])
-
-  const checkinRooms = checkinGuests.length
-  const phoneRooms = checkinGuests.filter((g) => g.phone?.length > 5).length
-  const noPhoneRooms = checkinRooms - phoneRooms
-
-  let sent = 0, delivered = 0, failed = 0, received = 0
-  for (const stat of messageStats) {
-    if (stat.direction === 'OUTBOUND') {
-      sent += stat._count.id
-      if (['DELIVERED', 'READ'].includes(stat.status)) delivered += stat._count.id
-      if (stat.status === 'FAILED') failed += stat._count.id
-    } else {
-      received += stat._count.id
-    }
-  }
-
-  const templateBreakdown = Object.fromEntries(
-    templateCounts.filter((t) => t.templateName).map((t) => [t.templateName, t._count.id]),
-  )
-  const failureReasons = Object.fromEntries(
-    failureCounts.filter((f) => f.errorMessage).map((f) => [f.errorMessage, f._count.id]),
-  )
-
-  const reachedRooms = await app.prisma.conversation.count({
-    where: { hotelId, messages: { some: { direction: 'INBOUND', createdAt: { gte: startOfDay, lte: endOfDay } } } },
-  })
-
-  return app.prisma.dailyReport.upsert({
-    where: { hotelId_date: { hotelId, date: today } },
-    update: {
-      totalRooms, checkinRooms, phoneRooms, noPhoneRooms, messagesSent: sent,
-      messagesDelivered: delivered, messagesFailed: failed, messagesReceived: received,
-      aiMessagesGenerated: aiCount, reachedRooms, unreachedRooms: Math.max(checkinRooms - reachedRooms, 0),
-      templateBreakdown, failureReasons,
-    },
-    create: {
-      hotelId, date: today, totalRooms, checkinRooms, phoneRooms, noPhoneRooms,
-      messagesSent: sent, messagesDelivered: delivered, messagesFailed: failed, messagesReceived: received,
-      aiMessagesGenerated: aiCount, reachedRooms, unreachedRooms: Math.max(checkinRooms - reachedRooms, 0),
-      templateBreakdown, failureReasons,
-    },
-  })
-}
