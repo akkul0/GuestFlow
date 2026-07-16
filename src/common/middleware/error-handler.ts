@@ -37,8 +37,15 @@ export function errorHandler(
     })
   }
 
-  // Known HTTP errors
-  if (error.statusCode && error.statusCode < 500) {
+  // Bilinen HTTP hataları.
+  // createError(...) ile üretilenler `expose` taşır → 5xx olsalar bile
+  // (örn. 502: Meta/Outscraper reddi) sebep kullanıcıya gösterilir.
+  const expose = (error as unknown as { expose?: boolean }).expose === true
+  if (error.statusCode && (error.statusCode < 500 || expose)) {
+    // Yukarı akış (upstream) hatalarını yine de logla — teşhis için gerekli
+    if (error.statusCode >= 500) {
+      request.log.error({ err: error, statusCode: error.statusCode }, 'Upstream error')
+    }
     return reply.status(error.statusCode).send({
       statusCode: error.statusCode,
       error: error.name,
