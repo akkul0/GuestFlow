@@ -26,16 +26,24 @@ function buildTransport() {
   })
 }
 
+export interface MailResult {
+  ok: boolean
+  // Hata mesajı panele gösterilir — SMTP sorunları (yanlış şifre, port,
+  // engellenen bağlantı) böylece körlemesine aranmaz.
+  error?: string
+}
+
 export async function sendDailyReportMail(opts: {
   to: string
   subject: string
   text: string
   pdf: Buffer
   filename: string
-}): Promise<boolean> {
+}): Promise<MailResult> {
   if (!isMailerConfigured()) {
-    logger.warn('Rapor maili atlandı: SMTP yapılandırılmamış (SMTP_HOST/USER/PASS)')
-    return false
+    const msg = 'SMTP yapılandırılmamış (SMTP_HOST / SMTP_USER / SMTP_PASS eksik).'
+    logger.warn('Rapor maili atlandı: ' + msg)
+    return { ok: false, error: msg }
   }
   try {
     const transport = buildTransport()
@@ -47,9 +55,10 @@ export async function sendDailyReportMail(opts: {
       attachments: [{ filename: opts.filename, content: opts.pdf, contentType: 'application/pdf' }],
     })
     logger.info({ to: opts.to, filename: opts.filename }, 'Günlük rapor maili gönderildi')
-    return true
+    return { ok: true }
   } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
     logger.error({ err }, 'Günlük rapor maili gönderilemedi')
-    return false
+    return { ok: false, error: detail }
   }
 }

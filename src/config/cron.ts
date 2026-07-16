@@ -1,13 +1,15 @@
 import { CronJob } from 'cron'
 import { FastifyInstance } from 'fastify'
-import { generateDailyReport, computeMgbData } from '../modules/reports/reports.routes'
+import {
+  generateDailyReport,
+  buildAndMailDailyReport,
+} from '../modules/reports/reports.routes'
 import {
   fetchAndAnalyzeReviews,
   sendLowStarAlerts,
   type ReviewAnalysisResult,
 } from '../modules/reviews/reviews.service'
-import { buildDailyPdf } from '../modules/reports/report-pdf'
-import { sendDailyReportMail, isMailerConfigured } from './mailer'
+import { isMailerConfigured } from './mailer'
 import { AiService } from '../modules/ai/ai.service'
 import { logger } from '../config/logger'
 
@@ -67,7 +69,9 @@ export function startCronJobs(app: FastifyInstance) {
           logger.error({ err, hotelId: hotel.id }, 'GR uyarıları gönderilemedi')
         }
 
-        // 3) Gece: MGB + yorum analizini PDF yap, maille
+        // 3) Gece: MGB + yorum analizini PDF yap, maille.
+        //    Panel butonuyla AYNI fonksiyon — davranış farkı olmaz.
+        //    (analiz yeniden çekilmesin diye elimizdeki sonucu geçiyoruz)
         if (withMail) {
           if (!hotel.reportEmail) {
             logger.warn({ hotelId: hotel.id }, 'Gece raporu atlandı: reportEmail tanımlı değil')
@@ -78,30 +82,10 @@ export function startCronJobs(app: FastifyInstance) {
             continue
           }
           try {
-            const mgb = await computeMgbData(app, hotel.id, 'today')
-            const dateLabel = new Date().toLocaleDateString('tr-TR', {
-              day: 'numeric',
-              month: 'long',
-              year: 'numeric',
-              timeZone: 'Europe/Istanbul',
-            })
-            const pdf = await buildDailyPdf({
-              hotelName: hotel.name,
-              dateLabel,
-              mgb,
-              reviews: analysis,
-            })
-            const fileDate = new Date().toISOString().slice(0, 10)
-            await sendDailyReportMail({
-              to: hotel.reportEmail,
-              subject: `${hotel.name} — Günlük Rapor (${dateLabel})`,
-              text:
-                `Merhaba,\n\n${hotel.name} için ${dateLabel} tarihli günlük rapor ektedir. ` +
-                `Rapor; günün MGB özetini, Google yorum analizini ve düşük puanlı yorumları içerir.\n\n` +
-                `Bu e-posta StayLine tarafından otomatik gönderilmiştir.`,
-              pdf,
-              filename: `stayline-gunluk-rapor-${fileDate}.pdf`,
-            })
+            const res = await buildAndMailDailyReport(app, aiService, hotel, analysis)
+            if (!res.ok) {
+              logger.error({ hotelId: hotel.id, error: res.error }, 'Gece raporu gönderilemedi')
+            }
           } catch (err) {
             logger.error({ err, hotelId: hotel.id }, 'Gece PDF raporu üretilemedi/gönderilemedi')
           }
