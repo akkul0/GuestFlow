@@ -233,6 +233,11 @@ export async function whatsappRoutes(app: FastifyInstance) {
       const items = list
         // Yalnızca ONAYLI şablonlar gönderilebilir
         .filter((t: any) => String(t?.status ?? '').toUpperCase() === 'APPROVED')
+        // "hello_world" Meta'nın her hesaba koyduğu ÖRNEK şablondur ve
+        // gerçek numaralardan gönderilemez (hata #131058: yalnızca Meta'nın
+        // genel test numaralarında çalışır). Listede tutmak yanlış seçime
+        // yol açıyor — gizliyoruz.
+        .filter((t: any) => String(t?.name ?? '').toLowerCase() !== 'hello_world')
         .map((t: any) => {
           const comps: any[] = Array.isArray(t.components) ? t.components : []
           const pick = (type: string) =>
