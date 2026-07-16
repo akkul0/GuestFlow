@@ -31,6 +31,10 @@ model Hotel {
   // WhatsApp Business API config
   waPhoneNumberId   String?
   waBusinessId      String?
+  // Düşük puanlı Google yorumları bu WhatsApp numarasına bildirilir
+  guestRelationsPhone String?
+  // Gece 23:30 PDF raporu bu adrese e-postalanır
+  reportEmail         String?
   waAccessToken     String?
   waWebhookSecret   String?
 
