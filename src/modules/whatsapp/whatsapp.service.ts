@@ -109,7 +109,13 @@ export class WhatsAppService {
         }
       }
       const metaErr = axiosErr.response?.data?.error
-      const metaError = metaErr?.message ?? 'Unknown Meta API error'
+      // Meta'nın mesajı + ayrıntısı birlikte gösterilir; ayrıntı genelde
+      // asıl sebebi söyler (örn. "Template name does not exist in the
+      // translation" / "Number of parameters does not match").
+      const metaError =
+        [metaErr?.message, metaErr?.error_data?.details]
+          .filter(Boolean)
+          .join(' — ') || 'Unknown Meta API error'
       this.app.log.error(
         { err: axiosErr.response?.data, code: metaErr?.code, details: metaErr?.error_data?.details },
         'Meta sendMessage failed',
