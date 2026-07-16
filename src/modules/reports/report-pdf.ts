@@ -1,6 +1,5 @@
 import PDFDocument from 'pdfkit'
-import path from 'path'
-import fs from 'fs'
+import { FONT_REGULAR, FONT_BOLD } from '../../assets/fonts/fonts'
 import { logger } from '../../config/logger'
 import type { ReviewAnalysisResult } from '../reviews/reviews.service'
 
@@ -10,10 +9,9 @@ import type { ReviewAnalysisResult } from '../reviews/reviews.service'
 // yıldızlı yorumların listesi.
 //
 // Türkçe karakterler (ğ, ş, İ...) PDF'in yerleşik fontlarında YOK;
-// bu yüzden DejaVu Sans gömülür: src/assets/fonts/ altında iki dosya
-// (DejaVuSans.ttf + DejaVuSans-Bold.ttf) repoda bulunmalıdır.
-// Fontlar eksikse rapor yine üretilir ama Türkçe harfler bozuk çıkar
-// (loga uyarı düşer).
+// bu yüzden DejaVu Sans kullanılır. Font, assets/fonts/fonts.ts içinde
+// BASE64 olarak gömülüdür — binary .ttf dosyası GitHub'a yüklenirken
+// bozulup "Unknown font format" hatası verdiği için bu yol seçildi.
 // ─────────────────────────────────────────────────────────────
 
 export interface MgbForPdf {
@@ -30,8 +28,6 @@ export interface MgbForPdf {
   complaints: { id: string; room: string; text: string; urgency: string }[]
 }
 
-const FONT_DIR = path.join(process.cwd(), 'src', 'assets', 'fonts')
-
 export function buildDailyPdf(input: {
   hotelName: string
   dateLabel: string
@@ -45,22 +41,16 @@ export function buildDailyPdf(input: {
     doc.on('end', () => resolve(Buffer.concat(chunks)))
     doc.on('error', reject)
 
-    // Türkçe destekli fontları kaydet (yoksa Helvetica'ya düş)
+    // Türkçe destekli gömülü fontları kaydet (sorun olursa Helvetica'ya düş)
     let F = 'Helvetica'
     let FB = 'Helvetica-Bold'
     try {
-      const reg = path.join(FONT_DIR, 'DejaVuSans.ttf')
-      const bold = path.join(FONT_DIR, 'DejaVuSans-Bold.ttf')
-      if (fs.existsSync(reg) && fs.existsSync(bold)) {
-        doc.registerFont('TR', reg)
-        doc.registerFont('TR-Bold', bold)
-        F = 'TR'
-        FB = 'TR-Bold'
-      } else {
-        logger.warn({ FONT_DIR }, 'PDF fontları bulunamadı — Türkçe karakterler bozuk çıkabilir')
-      }
+      doc.registerFont('TR', FONT_REGULAR)
+      doc.registerFont('TR-Bold', FONT_BOLD)
+      F = 'TR'
+      FB = 'TR-Bold'
     } catch (err) {
-      logger.warn({ err }, 'PDF font kaydı başarısız — varsayılan font kullanılıyor')
+      logger.warn({ err }, 'PDF font kaydı başarısız — Türkçe karakterler bozuk çıkabilir')
     }
 
     const { hotelName, dateLabel, mgb, reviews } = input
@@ -142,7 +132,7 @@ export function buildDailyPdf(input: {
       }
     } else if (reviews.last24h.total > 0) {
       doc.moveDown(0.3)
-      doc.font(F).fontSize(10.5).fillColor(TEXT).text('Bugün düşük puanlı yorum yok. 🎉')
+      doc.font(F).fontSize(10.5).fillColor(TEXT).text('Bugün düşük puanlı yorum yok.')
     }
 
     // ── Alt bilgi ──
