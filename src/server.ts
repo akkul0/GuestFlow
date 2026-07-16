@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import { buildApp } from './app'
+import { startCronJobs } from './config/cron'
 import { logger } from './config/logger'
 
 const start = async () => {
@@ -17,6 +18,12 @@ const start = async () => {
     const host = process.env.HOST ?? '0.0.0.0'
 
     await app.listen({ port, host })
+
+    // Zamanlanmış işleri başlat (yorum çekimleri, gece raporu, temizlik).
+    // NOT: startCronJobs daha önce yazılmış ama hiç ÇAĞRILMAMIŞTI — bu satır
+    // olmadan 23:55 rapor işi dahil hiçbir zamanlanmış iş çalışmıyordu.
+    startCronJobs(app)
+
     logger.info(`🚀 GuestFlow API running on http://${host}:${port}`)
     logger.info(`📚 Swagger docs: http://${host}:${port}/docs`)
   } catch (err) {
