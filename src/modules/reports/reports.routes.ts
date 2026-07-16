@@ -1,6 +1,11 @@
 import { FastifyInstance } from 'fastify'
 import { authenticate, requireRole } from '../../common/guards/auth.guard'
 import dayjs from 'dayjs'
+import { buildDailyPdf } from './report-pdf'
+import { sendDailyReportMail, isMailerConfigured } from '../../config/mailer'
+import { fetchAndAnalyzeReviews, type ReviewAnalysisResult } from '../reviews/reviews.service'
+import { AiService } from '../ai/ai.service'
+import { createError } from '../../common/utils/errors'
 
 export async function reportsRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate)
@@ -178,6 +183,39 @@ export async function reportsRoutes(app: FastifyInstance) {
       // kullanır; panel ile mail HER ZAMAN aynı rakamları gösterir.
       const data = await computeMgbData(app, hotelId, period)
       return reply.send(data)
+    },
+  })
+
+  // POST /reports/send-mail-now — Günlük PDF raporunu ŞİMDİ maille.
+  // Panelde "Raporu şimdi gönder" butonu bunu çağırır; 23:30'daki otomatik
+  // gönderimle BİREBİR aynı kodu kullanır (test = gerçek).
+  app.post('/send-mail-now', {
+    schema: { tags: ['Reports'], summary: 'Send the daily PDF report by e-mail now' },
+    preHandler: requireRole('HOTEL_ADMIN', 'MANAGER', 'SUPER_ADMIN'),
+    handler: async (request, reply) => {
+      const user = request.user as { hotelId: string }
+      const hotel = await app.prisma.hotel.findUnique({
+        where: { id: user.hotelId },
+        select: { id: true, name: true, reportEmail: true },
+      })
+      if (!hotel) throw createError(404, 'Otel bulunamadı.')
+      if (!hotel.reportEmail) {
+        throw createError(
+          400,
+          'Rapor e-posta adresi tanımlı değil (hotels.reportEmail boş).',
+        )
+      }
+      if (!isMailerConfigured()) {
+        throw createError(
+          400,
+          'SMTP ayarları eksik. Railway → Variables: SMTP_HOST, SMTP_USER, SMTP_PASS.',
+        )
+      }
+
+      const aiService = new AiService(app)
+      const res = await buildAndMailDailyReport(app, aiService, hotel)
+      if (!res.ok) throw createError(502, res.error ?? 'Rapor maili gönderilemedi.')
+      return reply.send({ ok: true, to: hotel.reportEmail })
     },
   })
 
@@ -429,3 +467,37 @@ export async function computeMgbData(
       }
 }
 
+// Günün PDF raporunu üretip e-postalar.
+// Hem 23:30 cron'u hem de panel butonu bunu çağırır → ikisi aynı sonucu verir.
+// preAnalysis: cron yorumları zaten çekmişse tekrar Outscraper'a gitmemek için.
+export async function buildAndMailDailyReport(
+  app: FastifyInstance,
+  aiService: AiService,
+  hotel: { id: string; name: string; reportEmail: string | null },
+  preAnalysis?: ReviewAnalysisResult,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!hotel.reportEmail) return { ok: false, error: 'reportEmail tanımlı değil.' }
+
+  const reviews = preAnalysis ?? (await fetchAndAnalyzeReviews(app, aiService))
+  const mgb = await computeMgbData(app, hotel.id, 'today')
+
+  const dateLabel = new Date().toLocaleDateString('tr-TR', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'Europe/Istanbul',
+  })
+  const pdf = await buildDailyPdf({ hotelName: hotel.name, dateLabel, mgb, reviews })
+  const fileDate = new Date().toISOString().slice(0, 10)
+
+  return sendDailyReportMail({
+    to: hotel.reportEmail,
+    subject: `${hotel.name} — Günlük Rapor (${dateLabel})`,
+    text:
+      `Merhaba,\n\n${hotel.name} için ${dateLabel} tarihli günlük rapor ektedir. ` +
+      `Rapor; günün MGB özetini, Google yorum analizini ve düşük puanlı yorumları içerir.\n\n` +
+      `Bu e-posta StayLine tarafından otomatik gönderilmiştir.`,
+    pdf,
+    filename: `stayline-gunluk-rapor-${fileDate}.pdf`,
+  })
+}
