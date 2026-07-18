@@ -35,6 +35,10 @@ model Hotel {
   guestRelationsPhone String?
   // Gece 23:30 PDF raporu bu adrese e-postalanır
   reportEmail         String?
+  // Otomatik karşılama: yeni misafir eklenince onaylı şablon gönderilir
+  autoWelcomeEnabled  Boolean @default(false)
+  welcomeTemplateName String?
+  welcomeTemplateLang String? @default("tr")
   waAccessToken     String?
   waWebhookSecret   String?
 
@@ -154,6 +158,8 @@ model Guest {
   reservationNo String?
 
   isActive      Boolean   @default(true)
+  // Otomatik karşılama şablonu bu misafire gönderildiyse zaman damgası
+  welcomeSentAt DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
