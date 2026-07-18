@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { authenticate } from '../../common/guards/auth.guard'
 import { createError } from '../../common/utils/errors'
 import { z } from 'zod'
+import { maybeSendWelcome } from './welcome.service'
 
 const guestSchema = z.object({
   firstName: z.string().min(1),
@@ -98,6 +99,7 @@ export async function guestsRoutes(app: FastifyInstance) {
   app.post<{ Body: z.infer<typeof guestSchema> }>('/', {
     schema: { tags: ['Guests'], summary: 'Create a guest' },
     handler: async (request, reply) => {
+      const welcomeUser = request.user as { hotelId: string }
       // Normalize phone to E.164-ish format
       const phone = request.body.phone.replace(/[\s\-()]/g, '')
 
@@ -178,6 +180,16 @@ export async function guestsRoutes(app: FastifyInstance) {
         include: { room: true, companions: true },
       })
 
+      // Otomatik karşılama (açıksa + şablon seçiliyse). Hata misafir kaydını bozmaz.
+      await maybeSendWelcome(app, welcomeUser.hotelId, {
+        id: guest.id,
+        firstName: guest.firstName,
+        lastName: guest.lastName,
+        phone: guest.phone,
+        language: guest.language,
+        welcomeSentAt: guest.welcomeSentAt,
+      })
+
       return reply.status(201).send(guest)
     },
   })
@@ -227,6 +239,7 @@ export async function guestsRoutes(app: FastifyInstance) {
   app.post<{ Body: { guests: z.infer<typeof guestSchema>[] } }>('/bulk-import', {
     schema: { tags: ['Guests'], summary: 'Bulk import guests (PMS sync)' },
     handler: async (request, reply) => {
+      const bulkUser = request.user as { hotelId: string }
       const results = { created: 0, updated: 0, skipped: 0, errors: [] as string[] }
 
       for (const guestData of request.body.guests) {
@@ -250,7 +263,7 @@ export async function guestsRoutes(app: FastifyInstance) {
             })
             results.updated++
           } else {
-            await app.prisma.guest.create({
+            const created = await app.prisma.guest.create({
               data: {
                 ...guestData,
                 phone,
@@ -261,6 +274,16 @@ export async function guestsRoutes(app: FastifyInstance) {
               },
             })
             results.created++
+            // Yeni misafire otomatik karşılama (açıksa). Toplu içe aktarımda
+            // da geçerli; hata tek misafiri atlar, döngüyü kırmaz.
+            await maybeSendWelcome(app, bulkUser.hotelId, {
+              id: created.id,
+              firstName: created.firstName,
+              lastName: created.lastName,
+              phone: created.phone,
+              language: created.language,
+              welcomeSentAt: created.welcomeSentAt,
+            })
           }
         } catch (err: unknown) {
           results.errors.push(`${guestData.phone}: ${(err as Error).message}`)
