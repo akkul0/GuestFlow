@@ -9,6 +9,10 @@ import {
   sendLowStarAlerts,
   type ReviewAnalysisResult,
 } from '../modules/reviews/reviews.service'
+import {
+  saveReviewSnapshot,
+  computeWeeklyTrend,
+} from '../modules/reviews/review-trend.service'
 import { isMailerConfigured } from './mailer'
 import { AiService } from '../modules/ai/ai.service'
 import { logger } from '../config/logger'
@@ -69,6 +73,9 @@ export function startCronJobs(app: FastifyInstance) {
           logger.error({ err, hotelId: hotel.id }, 'GR uyarıları gönderilemedi')
         }
 
+        // 2b) Analiz özetini kaydet (haftalık trend bu kayıtlardan hesaplanır)
+        await saveReviewSnapshot(app, hotel.id, analysis)
+
         // 3) Gece: MGB + yorum analizini PDF yap, maille.
         //    Panel butonuyla AYNI fonksiyon — davranış farkı olmaz.
         //    (analiz yeniden çekilmesin diye elimizdeki sonucu geçiyoruz)
@@ -82,7 +89,10 @@ export function startCronJobs(app: FastifyInstance) {
             continue
           }
           try {
-            const res = await buildAndMailDailyReport(app, aiService, hotel, analysis)
+            // Yalnızca PAZAR gecesi haftalık trend eklenir (0 = Pazar)
+            const isSunday = new Date().getDay() === 0
+            const trend = isSunday ? await computeWeeklyTrend(app, hotel.id) : null
+            const res = await buildAndMailDailyReport(app, aiService, hotel, analysis, trend)
             if (!res.ok) {
               logger.error({ hotelId: hotel.id, error: res.error }, 'Gece raporu gönderilemedi')
             }
