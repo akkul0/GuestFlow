@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { ChatService } from '../chat/chat.service'
 import { authenticate, requireRole } from '../../common/guards/auth.guard'
+import { sendBulkTemplate } from '../guests/bulk-template.service'
 import { createError } from '../../common/utils/errors'
 
 async function resolveMediaUrl(accessToken: string, mediaId: string): Promise<string | undefined> {
@@ -190,6 +191,37 @@ export async function whatsappRoutes(app: FastifyInstance) {
   // 24 saat penceresi kapalıyken (misafir 24 saattir yazmadıysa) YALNIZCA
   // Meta'da onaylanmış şablonlar iletilir. Bu uç, otelin WhatsApp Business
   // hesabındaki şablonları CANLI çeker — panelde tahmin yok, gerçek liste.
+  // POST /whatsapp/bulk-template — onaylı şablonu toplu gönder.
+  // target: 'staying' (konaklayanlar) | 'selected' (guestIds ile seçilenler)
+  app.post<{
+    Body: {
+      templateName: string
+      lang?: string
+      target: 'staying' | 'selected'
+      guestIds?: string[]
+    }
+  }>('/bulk-template', {
+    schema: { tags: ['WhatsApp'], summary: 'Send an approved template to many guests' },
+    preHandler: requireRole('HOTEL_ADMIN', 'MANAGER', 'SUPER_ADMIN'),
+    handler: async (request, reply) => {
+      const user = request.user as { hotelId: string }
+      const { templateName, lang, target, guestIds } = request.body
+      if (!templateName) {
+        return reply.status(400).send({ message: 'Şablon adı gerekli.' })
+      }
+      if (target !== 'staying' && target !== 'selected') {
+        return reply.status(400).send({ message: 'Geçersiz hedef.' })
+      }
+      const result = await sendBulkTemplate(app, user.hotelId, {
+        templateName,
+        lang: lang ?? 'tr',
+        target,
+        guestIds,
+      })
+      return reply.send(result)
+    },
+  })
+
   app.get('/meta-templates', {
     schema: { tags: ['WhatsApp'], summary: "List approved templates from Meta" },
     preHandler: authenticate,
