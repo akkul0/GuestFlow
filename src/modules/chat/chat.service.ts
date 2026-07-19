@@ -28,6 +28,9 @@ export class ChatService {
         { waContactId: { contains: search } },
         { guest: { firstName: { contains: search, mode: 'insensitive' } } },
         { guest: { lastName: { contains: search, mode: 'insensitive' } } },
+        // Mesaj İÇERİĞİ araması: "havlu" yazınca o kelimenin geçtiği
+        // konuşmalar da listelenir (silinmemiş mesajlarda).
+        { messages: { some: { body: { contains: search, mode: 'insensitive' }, deletedAt: null } } },
       ]
     }
     if (cursor) {
@@ -70,8 +73,35 @@ export class ChatService {
     })
 
     const hasMore = conversations.length > limit
-    const items = hasMore ? conversations.slice(0, limit) : conversations
-    const nextCursor = hasMore ? items[items.length - 1].lastMessageAt?.toISOString() : null
+    const baseItems = hasMore ? conversations.slice(0, limit) : conversations
+    const nextCursor = hasMore ? baseItems[baseItems.length - 1].lastMessageAt?.toISOString() : null
+
+    // Mesaj içeriğinde arama yapıldıysa, her konuşma için EŞLEŞEN mesajı bul
+    // ve matchedMessage olarak ekle — panel bunu "…havlu…" şeklinde gösterir.
+    let items: typeof baseItems | (typeof baseItems[number] & { matchedMessage?: string | null })[] =
+      baseItems
+    if (search && search.trim()) {
+      const term = search.trim()
+      items = await Promise.all(
+        baseItems.map(async (conv) => {
+          // Son mesaj zaten terimi içeriyorsa ekstra sorgu yapma
+          const last = conv.messages?.[0]
+          if (last?.body && last.body.toLowerCase().includes(term.toLowerCase())) {
+            return { ...conv, matchedMessage: null }
+          }
+          const hit = await this.app.prisma.message.findFirst({
+            where: {
+              conversationId: conv.id,
+              deletedAt: null,
+              body: { contains: term, mode: 'insensitive' },
+            },
+            orderBy: { createdAt: 'desc' },
+            select: { body: true },
+          })
+          return { ...conv, matchedMessage: hit?.body ?? null }
+        }),
+      )
+    }
 
     return { items, hasMore, nextCursor }
   }
