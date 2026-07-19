@@ -54,6 +54,7 @@ model Hotel {
   messageTemplates MessageTemplate[]
   rooms         Room[]
   reports       DailyReport[]
+  reviewSnapshots ReviewSnapshot[]
   departments   Department[]
   orders        Order[]
 
@@ -354,6 +355,29 @@ model DailyReport {
 
   @@unique([hotelId, date])
   @@map("daily_reports")
+}
+
+// ─────────────────────────────────────────
+// REVIEW SNAPSHOT — her gece yorum analizinin özeti.
+// Haftalık TREND (pazar raporu) bu kayıtlardan hesaplanır:
+// bu hafta vs geçen hafta şikayet/övgü/departman kıyası.
+// ─────────────────────────────────────────
+model ReviewSnapshot {
+  id             String   @id @default(uuid())
+  hotelId        String
+  hotel          Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  date           DateTime @db.Date
+  placeRating    Float    @default(0)   // Google genel puanı (o anki)
+  totalReviews   Int      @default(0)   // Google toplam yorum sayısı
+  last24hTotal   Int      @default(0)   // son 24 saatteki yeni yorum
+  praise         Int      @default(0)
+  complaints     Int      @default(0)
+  lowStar        Int      @default(0)   // 3 yıldız ve altı
+  byDepartment   Json?                  // { "POOL": 3, "FB": 2, ... }
+  createdAt      DateTime @default(now())
+
+  @@unique([hotelId, date])
+  @@map("review_snapshots")
 }
 
 // ─────────────────────────────────────────
