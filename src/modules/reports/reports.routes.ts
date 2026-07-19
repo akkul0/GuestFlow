@@ -4,6 +4,7 @@ import dayjs from 'dayjs'
 import { buildDailyPdf } from './report-pdf'
 import { sendDailyReportMail, isMailerConfigured } from '../../config/mailer'
 import { fetchAndAnalyzeReviews, type ReviewAnalysisResult } from '../reviews/reviews.service'
+import { computeWeeklyTrend, type WeeklyTrend } from '../reviews/review-trend.service'
 import { AiService } from '../ai/ai.service'
 import { createError } from '../../common/utils/errors'
 
@@ -475,6 +476,7 @@ export async function buildAndMailDailyReport(
   aiService: AiService,
   hotel: { id: string; name: string; reportEmail: string | null },
   preAnalysis?: ReviewAnalysisResult,
+  trend?: WeeklyTrend | null,
 ): Promise<{ ok: boolean; error?: string }> {
   if (!hotel.reportEmail) return { ok: false, error: 'reportEmail tanımlı değil.' }
 
@@ -487,7 +489,7 @@ export async function buildAndMailDailyReport(
     year: 'numeric',
     timeZone: 'Europe/Istanbul',
   })
-  const pdf = await buildDailyPdf({ hotelName: hotel.name, dateLabel, mgb, reviews })
+  const pdf = await buildDailyPdf({ hotelName: hotel.name, dateLabel, mgb, reviews, trend })
   const fileDate = new Date().toISOString().slice(0, 10)
 
   return sendDailyReportMail({

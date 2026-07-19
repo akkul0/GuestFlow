@@ -2,6 +2,7 @@ import PDFDocument from 'pdfkit'
 import { FONT_REGULAR, FONT_BOLD } from '../../assets/fonts/fonts'
 import { logger } from '../../config/logger'
 import type { ReviewAnalysisResult } from '../reviews/reviews.service'
+import type { WeeklyTrend } from '../reviews/review-trend.service'
 
 // ─────────────────────────────────────────────────────────────
 // GECE RAPORU PDF'İ — 23:30'da mail ekinde gider.
@@ -33,6 +34,7 @@ export function buildDailyPdf(input: {
   dateLabel: string
   mgb: MgbForPdf
   reviews: ReviewAnalysisResult
+  trend?: WeeklyTrend | null
 }): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: 46 })
@@ -53,7 +55,7 @@ export function buildDailyPdf(input: {
       logger.warn({ err }, 'PDF font kaydı başarısız — Türkçe karakterler bozuk çıkabilir')
     }
 
-    const { hotelName, dateLabel, mgb, reviews } = input
+    const { hotelName, dateLabel, mgb, reviews, trend } = input
     const ACCENT = '#4c56d7'
     const MUTED = '#6b7280'
     const TEXT = '#111827'
@@ -133,6 +135,35 @@ export function buildDailyPdf(input: {
     } else if (reviews.last24h.total > 0) {
       doc.moveDown(0.3)
       doc.font(F).fontSize(10.5).fillColor(TEXT).text('Bugün düşük puanlı yorum yok.')
+    }
+
+    // ── Haftalık Trend (yalnızca pazar raporunda gelir) ──
+    if (trend && trend.hasData) {
+      const arrow = (d: number) => (d > 0 ? '▲' : d < 0 ? '▼' : '—')
+      section('Haftal\u0131k Trend (Bu Hafta / Ge\u00e7en Hafta)')
+      doc.font(F).fontSize(10.5).fillColor(TEXT)
+      doc.text(
+        `\u015eikayet: ${trend.thisWeek.complaints} / ${trend.lastWeek.complaints}  ${arrow(trend.deltas.complaints)} (${trend.deltas.complaints >= 0 ? '+' : ''}${trend.deltas.complaints})`,
+      )
+      doc.text(
+        `\u00d6vg\u00fc: ${trend.thisWeek.praise} / ${trend.lastWeek.praise}  ${arrow(trend.deltas.praise)} (${trend.deltas.praise >= 0 ? '+' : ''}${trend.deltas.praise})`,
+      )
+      doc.text(
+        `D\u00fc\u015f\u00fck puan (3\u2605-): ${trend.thisWeek.lowStar} / ${trend.lastWeek.lowStar}  ${arrow(trend.deltas.lowStar)} (${trend.deltas.lowStar >= 0 ? '+' : ''}${trend.deltas.lowStar})`,
+      )
+      doc.text(
+        `Ortalama puan: ${trend.thisWeek.avgRating} / ${trend.lastWeek.avgRating}  ${arrow(trend.deltas.avgRating)} (${trend.deltas.avgRating >= 0 ? '+' : ''}${trend.deltas.avgRating})`,
+      )
+
+      const notable = trend.departmentChanges.filter((d) => d.delta !== 0).slice(0, 5)
+      if (notable.length > 0) {
+        doc.moveDown(0.5)
+        doc.font(FB).fontSize(10).fillColor(TEXT).text('Departman de\u011fi\u015fimleri:')
+        doc.font(F).fontSize(10).fillColor(MUTED)
+        for (const d of notable) {
+          doc.text(`  ${d.department}: ${d.lastWeek} \u2192 ${d.thisWeek}  ${arrow(d.delta)} (${d.delta >= 0 ? '+' : ''}${d.delta})`)
+        }
+      }
     }
 
     // ── Alt bilgi ──
