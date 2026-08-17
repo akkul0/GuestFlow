@@ -20,8 +20,7 @@ import { guestsRoutes } from './modules/guests/guests.routes'
 import { hotelsRoutes } from './modules/hotels/hotels.routes'
 import { aiRoutes } from './modules/ai/ai.routes'
 import { ordersRoutes } from './modules/orders/orders.routes'
-import { reviewsRoutes } from './modules/reviews/reviews.routes'
-import { telegramRoutes } from './modules/telegram/telegram.routes'
+import { voiceRoutes } from './modules/voice/voice.routes'
 
 export async function buildApp() {
   const app = Fastify({
@@ -101,8 +100,8 @@ export async function buildApp() {
   await app.register(hotelsRoutes, { prefix: `${prefix}/hotels` })
   await app.register(aiRoutes, { prefix: `${prefix}/ai` })
   await app.register(ordersRoutes, { prefix: `${prefix}/orders` })
-  await app.register(reviewsRoutes, { prefix: `${prefix}/reviews` })
-  await app.register(telegramRoutes, { prefix: `${prefix}/telegram` })
+  // Sesli asistan (telefon) — JWT yok, x-voice-secret ile korunur
+  await app.register(voiceRoutes, { prefix: `${prefix}/voice` })
 
   // ── Health Check ─────────────────────────────
   app.get('/health', async () => ({
