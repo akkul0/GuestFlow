@@ -474,6 +474,7 @@ enum OrderUrgency {
 enum OrderSource {
   WHATSAPP
   MANUAL
+  PHONE     // sesli asistan (telefon) uzerinden gelen talep
 }
 
 
