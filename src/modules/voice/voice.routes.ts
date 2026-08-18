@@ -59,19 +59,12 @@ export async function voiceRoutes(app: FastifyInstance) {
         hotelId = hotel.id
       }
 
-      // ── Departman eşleştirme + aciliyet (WhatsApp ile aynı mantık) ──
-      const departments = await app.prisma.department.findMany({
-        where: { hotelId, isActive: true },
-        select: { id: true, key: true, name: true, keywords: true },
-      })
-      const matched = await aiService.matchDepartment(requestText, departments)
-      const cat = await aiService.categorizeRequest(requestText)
-      const urgencyMap: Record<string, 'LOW' | 'MEDIUM' | 'HIGH'> = {
-        low: 'LOW',
-        medium: 'MEDIUM',
-        high: 'HIGH',
-      }
-      const urgency = urgencyMap[cat.urgency] ?? 'MEDIUM'
+      // ── HIZLI YOL ──
+      // Telefon konuşmasında her saniye hissedilir. Bu yüzden sipariş ÖNCE
+      // kaydedilir (tek DB yazımı, ~0.3sn) ve ajana hemen cevap döner.
+      // Departman eşleştirme + aciliyet (iki AI çağrısı, ~3sn) ARKA PLANDA
+      // yapılıp kayıt güncellenir. Böylece misafir sessizlik yaşamaz,
+      // talep de kaybolmaz.
 
       // Oda numarasından misafiri bulmayı dene (varsa siparişe bağlanır)
       let guestId: string | null = null
@@ -88,48 +81,35 @@ export async function voiceRoutes(app: FastifyInstance) {
         guestId = guest?.id ?? null
       }
 
-      // ── Sipariş kaydı ──
+      // ── Sipariş kaydı (hemen) ──
       const order = await app.prisma.order.create({
         data: {
           hotelId,
-          departmentId: matched?.id ?? null,
-          departmentKey: matched?.key ?? 'OTHER',
+          departmentId: null,
+          departmentKey: 'OTHER',
           guestId,
-          category: cat.category ?? 'OTHER',
-          urgency,
+          category: 'OTHER',
+          urgency: 'MEDIUM',
           requestText,
           roomNumber,
           status: 'OPEN',
           source: 'PHONE',
           isRequest: true,
-          isComplaint: cat.category === 'COMPLAINT',
+          isComplaint: false,
         },
         select: { id: true },
       })
 
-      app.log.info(
-        { orderId: order.id, roomNumber, department: matched?.name ?? 'OTHER', urgency },
-        'Order kaydedildi (Telefon)',
-      )
+      app.log.info({ orderId: order.id, roomNumber }, 'Order kaydedildi (Telefon) — analiz arka planda')
 
-      // ── Order Taker'a bildirim (hata talebi bozmaz) ──
-      try {
-        await notifyOrderTakerFromVoice(app, hotelId, {
-          roomNumber,
-          requestText,
-          departmentName: matched?.name ?? 'Belirsiz',
-          urgency: cat.urgency,
-          category: cat.category ?? 'OTHER',
-        })
-      } catch (err) {
-        app.log.error({ err }, 'Sesli asistan: Order Taker bildirimi gönderilemedi')
-      }
+      // ── Arka plan: departman + aciliyet + Order Taker bildirimi ──
+      // await YOK: yanıt beklemez. Hata olsa bile sipariş kaydı durur.
+      void enrichVoiceOrder(app, aiService, hotelId, order.id, requestText, roomNumber)
 
-      // Ajana kısa onay — konuşmada kullanır
+      // Ajana anında onay — konuşma akıcı kalır
       return reply.send({
         ok: true,
         orderId: order.id,
-        department: matched?.name ?? 'İlgili birim',
         message: 'Talep kaydedildi.',
       })
     },
@@ -194,4 +174,57 @@ async function notifyOrderTakerFromVoice(
       },
     },
   )
+}
+
+// Siparişi arka planda zenginleştirir: departman eşleştirme, aciliyet,
+// ardından Order Taker bildirimi. Ajan bunu BEKLEMEZ.
+async function enrichVoiceOrder(
+  app: FastifyInstance,
+  aiService: AiService,
+  hotelId: string,
+  orderId: string,
+  requestText: string,
+  roomNumber: string | null,
+): Promise<void> {
+  try {
+    const departments = await app.prisma.department.findMany({
+      where: { hotelId, isActive: true },
+      select: { id: true, key: true, name: true, keywords: true },
+    })
+    const matched = await aiService.matchDepartment(requestText, departments)
+    const cat = await aiService.categorizeRequest(requestText)
+    const urgencyMap: Record<string, 'LOW' | 'MEDIUM' | 'HIGH'> = {
+      low: 'LOW',
+      medium: 'MEDIUM',
+      high: 'HIGH',
+    }
+    const urgency = urgencyMap[cat.urgency] ?? 'MEDIUM'
+
+    await app.prisma.order.update({
+      where: { id: orderId },
+      data: {
+        departmentId: matched?.id ?? null,
+        departmentKey: matched?.key ?? 'OTHER',
+        category: cat.category ?? 'OTHER',
+        urgency,
+        isComplaint: cat.category === 'COMPLAINT',
+      },
+    })
+
+    app.log.info(
+      { orderId, department: matched?.name ?? 'OTHER', urgency },
+      'Telefon siparişi analiz edildi',
+    )
+
+    await notifyOrderTakerFromVoice(app, hotelId, {
+      roomNumber,
+      requestText,
+      departmentName: matched?.name ?? 'Belirsiz',
+      urgency: cat.urgency,
+      category: cat.category ?? 'OTHER',
+    })
+  } catch (err) {
+    // Arka plan hatası siparişi etkilemez — kayıt zaten atıldı
+    app.log.error({ err, orderId }, 'Telefon siparişi arka plan işlemi başarısız')
+  }
 }
