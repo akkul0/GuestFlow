@@ -165,7 +165,7 @@ export async function voiceRoutes(app: FastifyInstance) {
 }
 
 // Çağrı dökümünü işler: talepleri çıkarır, sipariş açar, bildirim gönderir.
-async function processCallTranscript(
+export async function processCallTranscript(
   app: FastifyInstance,
   aiService: AiService,
   turns: { role?: string; message?: string }[],
