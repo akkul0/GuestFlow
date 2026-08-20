@@ -114,6 +114,119 @@ export async function voiceRoutes(app: FastifyInstance) {
       })
     },
   })
+
+  // ─────────────────────────────────────────────────────────────
+  // POST /voice/call-ended — ÇAĞRI SONU WEBHOOK'U
+  //
+  // ElevenLabs, konuşma bittiğinde tüm dökümü buraya gönderir.
+  // Talepler burada çıkarılır → misafir konuşma sırasında HİÇ BEKLEMEZ.
+  // (Alternatif olan "konuşma ortasında araç çağırma" yöntemi hem
+  //  yavaştı hem de model bazen çağırmayı atlıyordu.)
+  //
+  // Güvenlik: URL'ye ?key=... eklenir (ElevenLabs webhook adresinde).
+  // ─────────────────────────────────────────────────────────────
+  app.post<{
+    Querystring: { key?: string }
+    Body: {
+      type?: string
+      data?: {
+        transcript?: { role?: string; message?: string }[]
+        conversation_id?: string
+        metadata?: { call_duration_secs?: number }
+      }
+    }
+  }>('/call-ended', {
+    schema: { tags: ['Voice'], summary: 'ElevenLabs post-call webhook' },
+    handler: async (request, reply) => {
+      const expected = process.env.VOICE_API_SECRET
+      const provided = request.query.key ?? request.headers['x-voice-secret']
+      if (!expected || provided !== expected) {
+        app.log.warn({ ip: request.ip }, 'Çağrı sonu webhook: geçersiz anahtar')
+        return reply.status(401).send({ ok: false })
+      }
+
+      // Yalnızca döküm olayını işle (ses olayı ayrı gelir)
+      const type = request.body.type
+      if (type && type !== 'post_call_transcription') {
+        return reply.send({ ok: true, skipped: type })
+      }
+
+      const turns = request.body.data?.transcript ?? []
+      if (turns.length === 0) {
+        return reply.send({ ok: true, skipped: 'boş döküm' })
+      }
+
+      // ElevenLabs'e HEMEN cevap ver, işi arka planda yap.
+      // (Webhook'lar geç cevapta yeniden denenir; işi bekletmeyelim.)
+      void processCallTranscript(app, aiService, turns)
+      return reply.send({ ok: true })
+    },
+  })
+}
+
+// Çağrı dökümünü işler: talepleri çıkarır, sipariş açar, bildirim gönderir.
+async function processCallTranscript(
+  app: FastifyInstance,
+  aiService: AiService,
+  turns: { role?: string; message?: string }[],
+): Promise<void> {
+  try {
+    // Dökümü okunur metne çevir
+    const text = turns
+      .filter((t) => t.message)
+      .map((t) => `${t.role === 'user' ? 'Misafir' : 'Asistan'}: ${t.message}`)
+      .join('\n')
+
+    const extracted = await aiService.extractRequestsFromCall(text)
+
+    if (extracted.requests.length === 0) {
+      app.log.info('Çağrıda somut talep yok — sipariş açılmadı')
+      return
+    }
+
+    const hotel = await app.prisma.hotel.findFirst({
+      where: { isActive: true },
+      select: { id: true },
+    })
+    if (!hotel) return
+
+    const roomNumber = extracted.roomNumber
+    let guestId: string | null = null
+    if (roomNumber) {
+      const guest = await app.prisma.guest.findFirst({
+        where: { hotelId: hotel.id, isActive: true, room: { number: roomNumber } },
+        select: { id: true },
+      })
+      guestId = guest?.id ?? null
+    }
+
+    // Her talep için ayrı sipariş (misafir birden fazla şey istemiş olabilir)
+    for (const requestText of extracted.requests) {
+      const order = await app.prisma.order.create({
+        data: {
+          hotelId: hotel.id,
+          departmentId: null,
+          departmentKey: 'OTHER',
+          guestId,
+          category: 'OTHER',
+          urgency: 'MEDIUM',
+          requestText,
+          roomNumber,
+          status: 'OPEN',
+          source: 'PHONE',
+          isRequest: true,
+          isComplaint: extracted.isComplaint,
+        },
+        select: { id: true },
+      })
+      app.log.info({ orderId: order.id, roomNumber, requestText }, 'Telefon çağrısından sipariş açıldı')
+
+      // Departman + aciliyet + bildirim
+      await enrichVoiceOrder(app, aiService, hotel.id, order.id, requestText, roomNumber)
+    }
+  } catch (err) {
+    app.log.error({ err }, 'Çağrı dökümü işlenemedi')
+  }
 }
 
 // Order Taker'a WhatsApp bildirimi (telefon kaynaklı talepler için)
