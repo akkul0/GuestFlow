@@ -15,6 +15,7 @@ import {
 } from '../modules/reviews/review-trend.service'
 import { isMailerConfigured } from './mailer'
 import { AiService } from '../modules/ai/ai.service'
+import { pollFinishedCalls } from '../modules/voice/voice-poller.service'
 import { logger } from '../config/logger'
 
 // ─────────────────────────────────────────────────────────────
@@ -157,6 +158,25 @@ export function startCronJobs(app: FastifyInstance) {
     'Europe/Istanbul',
   )
 
+  // Her 2 dakikada — biten telefon konuşmalarını topla, talepleri aç.
+  // (Sesli asistan; ElevenLabs yapılandırılmamışsa sessizce hiçbir şey yapmaz.)
+  let voicePollRunning = false
+  const voicePollJob = new CronJob(
+    '*/2 * * * *',
+    async () => {
+      if (voicePollRunning) return
+      voicePollRunning = true
+      try {
+        await pollFinishedCalls(app, aiService)
+      } finally {
+        voicePollRunning = false
+      }
+    },
+    null,
+    true,
+    'Europe/Istanbul',
+  )
+
   // 02:00 — süresi dolmuş refresh token temizliği (mevcut davranış)
   const cleanupJob = new CronJob(
     '0 2 * * *',
@@ -172,7 +192,7 @@ export function startCronJobs(app: FastifyInstance) {
   )
 
   logger.info(
-    'Cron jobs started: reviewMorning(09:00), reviewAfternoon(15:30), reviewNight(23:30+mail), dailyReport(23:55), cleanup(02:00)',
+    'Cron jobs started: reviewMorning(09:00), reviewAfternoon(15:30), reviewNight(23:30+mail), voicePoll(2dk), dailyReport(23:55), cleanup(02:00)',
   )
-  return { reviewMorning, reviewAfternoon, reviewNight, dailyReportJob, cleanupJob }
+  return { reviewMorning, reviewAfternoon, reviewNight, voicePollJob, dailyReportJob, cleanupJob }
 }
