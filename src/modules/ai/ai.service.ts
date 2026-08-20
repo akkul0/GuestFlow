@@ -655,6 +655,63 @@ SADECE şu formatta JSON döndür (başka hiçbir şey yazma):
     }
   }
 
+  // Sesli mesajı (WhatsApp voice/audio) metne çevirir (Groq Whisper).
+  // Çok dillidir; Türkçe, Rusça, Arapça vb. otomatik algılar. Sesi Meta'dan
+  // TOKEN ile indirip Groq'a multipart olarak yollar. Başarısızsa null döner.
+  async transcribeAudio(audioUrl: string, accessToken: string): Promise<string | null> {
+    const groqKey = process.env.GROQ_API_KEY
+    if (!groqKey) {
+      this.app.log.warn('GROQ_API_KEY tanımlı değil; ses transkripti atlandı')
+      return null
+    }
+    try {
+      // 1) Sesi Meta'dan indir (Bearer token ile)
+      const headers: Record<string, string> = {}
+      if (
+        accessToken &&
+        (audioUrl.includes('graph.facebook.com') ||
+          audioUrl.includes('fbsbx.com') ||
+          audioUrl.includes('whatsapp.net') ||
+          audioUrl.includes('fbcdn.net'))
+      ) {
+        headers['Authorization'] = `Bearer ${accessToken}`
+      } else if (audioUrl.includes('twilio.com') && accessToken) {
+        headers['Authorization'] = `Basic ${Buffer.from(accessToken).toString('base64')}`
+      }
+      const audioRes = await fetch(audioUrl, { headers })
+      if (!audioRes.ok) return null
+      const audioBuf = Buffer.from(await audioRes.arrayBuffer())
+      const audioType = (audioRes.headers.get('content-type') ?? 'audio/ogg').split(';')[0]
+
+      // 2) Groq Whisper'a multipart gönder
+      const form = new FormData()
+      const ext = audioType.includes('mp3') ? 'mp3'
+        : audioType.includes('mp4') || audioType.includes('m4a') ? 'm4a'
+        : audioType.includes('wav') ? 'wav'
+        : audioType.includes('webm') ? 'webm'
+        : 'ogg'
+      form.append('file', new Blob([audioBuf], { type: audioType }), `audio.${ext}`)
+      form.append('model', 'whisper-large-v3')
+      // response_format text → düz metin döner
+      form.append('response_format', 'text')
+
+      const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${groqKey}` },
+        body: form,
+      })
+      if (!res.ok) {
+        this.app.log.error({ status: res.status }, 'Groq transkript başarısız')
+        return null
+      }
+      const text = (await res.text()).trim()
+      return text.length > 0 ? text : null
+    } catch (err) {
+      this.app.log.error({ err }, 'Ses transkripti hatası')
+      return null
+    }
+  }
+
   async isServiceRequest(text: string): Promise<boolean> {
     try {
       const res = await this.client.messages.create({
@@ -745,6 +802,61 @@ Anahtarlar:
    * departments: [{ id, key, name, keywords }]
    * Döner: eşleşen departmanın { id, key, name } veya null (hiçbiri uymadıysa).
    */
+  // Birden çok Google yorumunu TEK AI çağrısında analiz eder (minimum maliyet).
+  // Her yorum için: tip (övgü/şikayet/nötr), şiddet (1-3), departman, ve Türkçe
+  // çeviri (yorum yabancıysa). Girdi sırası korunur (index ile eşleşir).
+  async analyzeReviews(
+    reviews: { text: string; rating: number }[],
+  ): Promise<
+    Array<{
+      sentiment: 'praise' | 'complaint' | 'neutral'
+      severity: number
+      department: string
+      translation: string | null
+    }>
+  > {
+    if (reviews.length === 0) return []
+    try {
+      const numbered = reviews
+        .map((r, i) => `[${i}] (puan: ${r.rating}/5) ${(r.text ?? '').slice(0, 500)}`)
+        .join('\n')
+
+      const res = await this.client.messages.create({
+        model: FAST_MODEL,
+        max_tokens: Math.min(4000, 200 + reviews.length * 80),
+        system: `Sen bir otel yorum analistisin. Sana numaralı Google yorumları verilecek. HER yorum için şunları belirle:
+
+- "sentiment": "praise" (övgü/olumlu), "complaint" (şikayet/olumsuz) veya "neutral" (nötr/karışık).
+- "severity": şikayetse şiddeti → 1 (hafif), 2 (orta), 3 (ciddi). Şikayet değilse 0.
+- "department": yorumun ilgili olduğu departman. ŞUNLARDAN BİRİ: "HOUSEKEEPING" (temizlik/oda düzeni), "FB" (yemek/restoran/bar), "RECEPTION" (resepsiyon/check-in/personel ilgisi), "TECHNICAL" (klima/su/elektrik/arıza), "FACILITIES" (havuz/spa/genel tesis), "GENERAL" (genel/spesifik değil).
+- "translation": Yorum TÜRKÇE DEĞİLSE Türkçe çevirisi. Yorum zaten Türkçeyse null.
+
+SADECE şu formatta, yorum sayısı kadar elemanlı bir JSON dizi döndür (başka hiçbir şey yazma):
+[{"sentiment":"...","severity":0,"department":"...","translation":"..."}]
+
+Dizinin sırası girdi sırasıyla AYNI olmalı.`,
+        messages: [{ role: 'user', content: numbered }],
+      })
+      const block = res.content[0]
+      const raw = block?.type === 'text' ? block.text.replace(/```json|```/g, '').trim() : '[]'
+      const parsed = JSON.parse(raw)
+      if (!Array.isArray(parsed)) return []
+      return reviews.map((_, i) => {
+        const r = parsed[i] ?? {}
+        const sentiment = ['praise', 'complaint', 'neutral'].includes(r.sentiment) ? r.sentiment : 'neutral'
+        return {
+          sentiment,
+          severity: sentiment === 'complaint' ? (Number(r.severity) >= 1 && Number(r.severity) <= 3 ? Number(r.severity) : 2) : 0,
+          department: typeof r.department === 'string' ? r.department : 'GENERAL',
+          translation: typeof r.translation === 'string' && r.translation.trim() ? r.translation.trim() : null,
+        }
+      })
+    } catch (err) {
+      this.app.log.error({ err }, 'Yorum analizi başarısız')
+      return reviews.map(() => ({ sentiment: 'neutral' as const, severity: 0, department: 'GENERAL', translation: null }))
+    }
+  }
+
   async matchDepartment(
     text: string,
     departments: { id: string; key: string; name: string; keywords?: string | null }[],
