@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import axios from 'axios'
 import { AiService } from '../ai/ai.service'
+import { getOnShiftUsers, cleanPhone, fallbackPhone } from '../../common/utils/on-shift'
 
 // ─────────────────────────────────────────────────────────────
 // SESLİ ASİSTAN (telefon) → StayLine
@@ -236,6 +237,7 @@ async function notifyOrderTakerFromVoice(
   info: {
     roomNumber: string | null
     requestText: string
+    departmentId: string | null
     departmentName: string
     urgency: string
     category: string
@@ -247,7 +249,35 @@ async function notifyOrderTakerFromVoice(
   })
   if (!hotel?.waAccessToken || !hotel.waPhoneNumberId) return
 
-  const to = (process.env.ORDER_TAKER_PHONE ?? '+905514072515').replace(/[^0-9]/g, '')
+  // ── Alıcılar: talebin departmanında ŞU AN vardiyada olan personel ──
+  // WhatsApp taleplerindeki mantığın aynısı; kanal fark etmeksizin bildirim
+  // görevdeki kişiye gider. Vardiyada kimse yoksa yedek numara devreye girer.
+  const recipients = new Set<string>()
+  if (info.departmentId) {
+    try {
+      const onShift = await getOnShiftUsers(app, hotelId, info.departmentId)
+      for (const u of onShift) {
+        const phone = cleanPhone(u.whatsappPhone)
+        if (phone) recipients.add(phone)
+      }
+    } catch (err) {
+      app.log.error({ err }, 'Sesli asistan: vardiya alıcıları alınamadı')
+    }
+  }
+  if (recipients.size === 0) {
+    const backup = fallbackPhone()
+    if (backup) {
+      recipients.add(backup)
+      app.log.warn(
+        { department: info.departmentName },
+        'Sesli asistan: vardiyada personel yok — bildirim yedek numaraya gönderildi',
+      )
+    }
+  }
+  if (recipients.size === 0) {
+    app.log.warn({ department: info.departmentName }, 'Sesli asistan: bildirim için alıcı yok')
+    return
+  }
   const emojiMap: Record<string, string> = {
     TECHNICAL: '🔧',
     HOUSEKEEPING: '🧹',
@@ -277,16 +307,24 @@ async function notifyOrderTakerFromVoice(
     `💬 Talep: ${info.requestText}`
 
   const apiVersion = process.env.WA_API_VERSION ?? 'v21.0'
-  await axios.post(
-    `https://graph.facebook.com/${apiVersion}/${hotel.waPhoneNumberId}/messages`,
-    { messaging_product: 'whatsapp', to, type: 'text', text: { body: msg } },
-    {
-      headers: {
-        Authorization: `Bearer ${hotel.waAccessToken}`,
-        'Content-Type': 'application/json',
-      },
-    },
-  )
+
+  // Her alıcıya ayrı gönderim; birine ulaşılamazsa diğerleri etkilenmez.
+  for (const to of recipients) {
+    try {
+      await axios.post(
+        `https://graph.facebook.com/${apiVersion}/${hotel.waPhoneNumberId}/messages`,
+        { messaging_product: 'whatsapp', to, type: 'text', text: { body: msg } },
+        {
+          headers: {
+            Authorization: `Bearer ${hotel.waAccessToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      )
+    } catch (err) {
+      app.log.error({ err, to }, 'Sesli asistan: bildirim gönderilemedi')
+    }
+  }
 }
 
 // Siparişi arka planda zenginleştirir: departman eşleştirme, aciliyet,
@@ -332,6 +370,7 @@ async function enrichVoiceOrder(
     await notifyOrderTakerFromVoice(app, hotelId, {
       roomNumber,
       requestText,
+      departmentId: matched?.id ?? null,
       departmentName: matched?.name ?? 'Belirsiz',
       urgency: cat.urgency,
       category: cat.category ?? 'OTHER',
