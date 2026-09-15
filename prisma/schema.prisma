@@ -96,6 +96,7 @@ enum UserRole {
   SUPER_ADMIN
   HOTEL_ADMIN
   MANAGER
+  ORDER_TAKER   // departman sefi — yalnizca kendi departmaninin taleplerini yonetir
   AGENT
 }
 
@@ -414,6 +415,10 @@ model Department {
   keywords  String?  @db.Text // AI eslestirme icin virgulle ayrilmis anahtar kelimeler
   isActive  Boolean  @default(true)
   isCustom  Boolean  @default(false) // manuel eklenen mi (hazir sablon degil)
+  // Bu departmanin personeli misafirle dogrudan iletisim kurar mi?
+  // true ise departmanin ORDER_TAKER'lari sohbetleri, misafirleri ve yorumlari gorur.
+  // (Ornek: On Buro, Guest Relations -> true; Teknik Servis, Kat Hizmetleri -> false)
+  guestAccess Boolean @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
