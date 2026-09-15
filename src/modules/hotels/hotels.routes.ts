@@ -92,7 +92,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
     Body: { username: string; email?: string; password: string; firstName: string; lastName: string; role: string; language?: string; whatsappPhone?: string; departmentId?: string }
   }>('/:id/users', {
     schema: { tags: ['Hotels'], summary: 'Create a hotel user' },
-    preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
+    preHandler: requireRole('HOTEL_ADMIN', 'MANAGER', 'SUPER_ADMIN'),
     handler: async (request, reply) => {
       const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS ?? '12')
       const passwordHash = await bcrypt.hash(request.body.password, saltRounds)
@@ -102,6 +102,12 @@ export async function hotelsRoutes(app: FastifyInstance) {
         request.body.email && request.body.email.trim()
           ? request.body.email.trim()
           : `${request.body.username}@stayline.local`
+
+      // Departman şefi mutlaka bir departmana bağlı olmalı — aksi hâlde
+      // hiçbir talep göremez ve vardiyaya anlamlı şekilde eklenemez.
+      if (request.body.role === 'ORDER_TAKER' && !request.body.departmentId) {
+        throw createError(400, 'Departman şefi için departman seçimi zorunludur')
+      }
 
       const user = await app.prisma.user.create({
         data: {
@@ -133,8 +139,20 @@ export async function hotelsRoutes(app: FastifyInstance) {
     Body: { firstName?: string; lastName?: string; role?: string; isActive?: boolean; language?: string; whatsappPhone?: string; departmentId?: string }
   }>('/:id/users/:userId', {
     schema: { tags: ['Hotels'], summary: 'Update a hotel user' },
-    preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
+    preHandler: requireRole('HOTEL_ADMIN', 'MANAGER', 'SUPER_ADMIN'),
     handler: async (request, reply) => {
+      // Rol şefliğe çevriliyorsa departman şart: gövdede gelmiyorsa mevcut kayda bak.
+      if (request.body.role === 'ORDER_TAKER') {
+        const current = await app.prisma.user.findUnique({
+          where: { id: request.params.userId },
+          select: { departmentId: true },
+        })
+        const deptId = request.body.departmentId ?? current?.departmentId
+        if (!deptId) {
+          throw createError(400, 'Departman şefi için departman seçimi zorunludur')
+        }
+      }
+
       const user = await app.prisma.user.findFirst({
         where: { id: request.params.userId, hotelId: request.params.id },
       })
@@ -165,7 +183,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
   // DELETE /hotels/:id/users/:userId — personeli sil
   app.delete<{ Params: { id: string; userId: string } }>('/:id/users/:userId', {
     schema: { tags: ['Hotels'], summary: 'Delete a hotel user' },
-    preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
+    preHandler: requireRole('HOTEL_ADMIN', 'MANAGER', 'SUPER_ADMIN'),
     handler: async (request, reply) => {
       const user = await app.prisma.user.findFirst({
         where: { id: request.params.userId, hotelId: request.params.id },
