@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify'
-import { authenticate } from '../../common/guards/auth.guard'
+import { authenticate, requireGuestComms } from '../../common/guards/auth.guard'
 import { AiService } from '../ai/ai.service'
 import { fetchAndAnalyzeReviews } from './reviews.service'
 
@@ -8,7 +8,9 @@ import { fetchAndAnalyzeReviews } from './reviews.service'
 // Analiz mantığı reviews.service.ts'tedir — zamanlanmış işler (09:00 /
 // 15:30 / 23:30) de aynı çekirdeği kullanır.
 export async function reviewsRoutes(app: FastifyInstance) {
-  app.addHook('preHandler', authenticate)
+  // Misafir iletişimi: yönetim rolleri + AGENT her zaman; departman şefi
+  // (ORDER_TAKER) yalnızca departmanının guestAccess bayrağı açıksa.
+  app.addHook('preHandler', requireGuestComms)
   const aiService = new AiService(app)
 
   // POST /reviews/analyze — "Analiz Et" butonu. Canlı çeker + analiz eder.
