@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify'
-import { authenticate } from '../../common/guards/auth.guard'
+import { authenticate, requireGuestComms } from '../../common/guards/auth.guard'
 import { createError } from '../../common/utils/errors'
 import { z } from 'zod'
 import { maybeSendWelcome } from './welcome.service'
@@ -25,7 +25,9 @@ const guestSchema = z.object({
 })
 
 export async function guestsRoutes(app: FastifyInstance) {
-  app.addHook('preHandler', authenticate)
+  // Misafir iletişimi: yönetim rolleri + AGENT her zaman; departman şefi
+  // (ORDER_TAKER) yalnızca departmanının guestAccess bayrağı açıksa.
+  app.addHook('preHandler', requireGuestComms)
 
   // GET /guests
   app.get<{ Querystring: { search?: string; checkedIn?: string; page?: string; limit?: string } }>('/', {
