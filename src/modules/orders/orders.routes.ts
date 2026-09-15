@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify'
-import { authenticate } from '../../common/guards/auth.guard'
+import { authenticate, requireRole, departmentScopeOf } from '../../common/guards/auth.guard'
+import type { JwtPayload } from '../../common/guards/auth.guard'
 import { createError } from '../../common/utils/errors'
 import { z } from 'zod'
 
@@ -60,6 +61,8 @@ const updateDepartmentSchema = z.object({
   name: z.string().min(1).optional(),
   keywords: z.string().optional(),
   isActive: z.boolean().optional(),
+  // Bu departmanin sefleri misafir iletisimi bolumlerini gorsun mu
+  guestAccess: z.boolean().optional(),
 })
 
 /* ─────────────── Anahtar kelime cakisma temizligi ───────────────
@@ -194,6 +197,7 @@ export async function ordersRoutes(app: FastifyInstance) {
 
   // POST /orders/departments — departman oluştur (manuel)
   app.post<{ Body: z.infer<typeof createDepartmentSchema> }>('/departments', {
+    preHandler: requireRole('SUPER_ADMIN', 'HOTEL_ADMIN', 'MANAGER'),
     schema: { tags: ['Orders'], summary: 'Create a department' },
     handler: async (request, reply) => {
       const hotelId = request.user.hotelId
@@ -244,6 +248,7 @@ export async function ordersRoutes(app: FastifyInstance) {
 
   // PATCH /orders/departments/:id — departman güncelle
   app.patch<{ Params: { id: string }; Body: z.infer<typeof updateDepartmentSchema> }>('/departments/:id', {
+    preHandler: requireRole('SUPER_ADMIN', 'HOTEL_ADMIN', 'MANAGER'),
     schema: { tags: ['Orders'], summary: 'Update a department' },
     handler: async (request, reply) => {
       const hotelId = request.user.hotelId
@@ -280,6 +285,7 @@ export async function ordersRoutes(app: FastifyInstance) {
           ...(body.name !== undefined && { name: body.name.trim() }),
           ...(body.keywords !== undefined && { keywords: keywordsToString(parseKeywords(body.keywords)) }),
           ...(body.isActive !== undefined && { isActive: body.isActive }),
+          ...(body.guestAccess !== undefined && { guestAccess: body.guestAccess }),
         },
       })
 
@@ -289,6 +295,7 @@ export async function ordersRoutes(app: FastifyInstance) {
 
   // DELETE /orders/departments/:id — departman sil
   app.delete<{ Params: { id: string } }>('/departments/:id', {
+    preHandler: requireRole('SUPER_ADMIN', 'HOTEL_ADMIN', 'MANAGER'),
     schema: { tags: ['Orders'], summary: 'Delete a department' },
     handler: async (request, reply) => {
       const hotelId = request.user.hotelId
@@ -315,6 +322,11 @@ export async function ordersRoutes(app: FastifyInstance) {
       if (status) where.status = status
       if (departmentId) where.departmentId = departmentId
 
+      // Departman şefi (ORDER_TAKER) yalnızca kendi departmanının taleplerini görür.
+      // Bu kısıt sunucu tarafındadır; sorgu parametresiyle aşılamaz.
+      const scope = departmentScopeOf(request.user as unknown as JwtPayload)
+      if (scope) where.departmentId = scope
+
       const items = await app.prisma.order.findMany({
         where,
         orderBy: { createdAt: 'desc' },
@@ -335,13 +347,22 @@ export async function ordersRoutes(app: FastifyInstance) {
       const hotelId = request.user.hotelId
       const body = createOrderSchema.parse(request.body)
 
+      // Departman şefi elle talep açarken kendi departmanı dışını seçemez.
+      const scope = departmentScopeOf(request.user as unknown as JwtPayload)
+      if (scope && body.departmentId && body.departmentId !== scope) {
+        throw createError(403, 'Yalnızca kendi departmanınıza talep açabilirsiniz')
+      }
+
       // Departman bilgisini çöz: departmentId verildiyse onu kullan
       let departmentId: string | null = null
       let departmentKey = body.departmentKey ?? 'OTHER'
 
-      if (body.departmentId) {
+      // Şef departman seçmediyse otomatik olarak kendi departmanına düşer
+      const effectiveDeptId = body.departmentId ?? (scope && scope !== '__NONE__' ? scope : undefined)
+
+      if (effectiveDeptId) {
         const dept = await app.prisma.department.findFirst({
-          where: { id: body.departmentId, hotelId },
+          where: { id: effectiveDeptId, hotelId },
         })
         if (!dept) throw createError(404, 'Departman bulunamadı')
         departmentId = dept.id
@@ -384,6 +405,18 @@ export async function ordersRoutes(app: FastifyInstance) {
       })
       if (!order) throw createError(404, 'Talep bulunamadı')
 
+      // Departman şefi başka departmanın talebine dokunamaz ve talebi
+      // kendi departmanı dışına taşıyamaz.
+      const scope = departmentScopeOf(request.user as unknown as JwtPayload)
+      if (scope) {
+        if (order.departmentId !== scope) {
+          throw createError(403, 'Bu talep sizin departmanınıza ait değil')
+        }
+        if (body.departmentId !== undefined && body.departmentId !== scope) {
+          throw createError(403, 'Talebi başka departmana taşıyamazsınız')
+        }
+      }
+
       const updated = await app.prisma.order.update({
         where: { id: order.id },
         data: {
@@ -411,6 +444,13 @@ export async function ordersRoutes(app: FastifyInstance) {
         where: { id: request.params.id, hotelId },
       })
       if (!order) throw createError(404, 'Talep bulunamadı')
+
+      // Departman şefi yalnızca kendi departmanının talebini silebilir.
+      const scope = departmentScopeOf(request.user as unknown as JwtPayload)
+      if (scope && order.departmentId !== scope) {
+        throw createError(403, 'Bu talep sizin departmanınıza ait değil')
+      }
+
       // SOFT DELETE: talebi fiziksel silmiyoruz, "silindi" işaretliyoruz.
       // Order Taker listesinden gizlenir AMA raporlarda (MGB) kalır.
       await app.prisma.order.update({
