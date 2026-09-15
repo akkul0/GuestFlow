@@ -1,12 +1,14 @@
 import { FastifyInstance } from 'fastify'
 import { ChatService } from './chat.service'
-import { authenticate } from '../../common/guards/auth.guard'
+import { authenticate, requireGuestComms } from '../../common/guards/auth.guard'
 
 export async function chatRoutes(app: FastifyInstance) {
   const chatService = new ChatService(app)
 
   // All chat routes require auth
-  app.addHook('preHandler', authenticate)
+  // Misafir iletişimi: yönetim rolleri + AGENT her zaman; departman şefi
+  // (ORDER_TAKER) yalnızca departmanının guestAccess bayrağı açıksa.
+  app.addHook('preHandler', requireGuestComms)
 
   // GET /chat/conversations
   app.get('/conversations', {

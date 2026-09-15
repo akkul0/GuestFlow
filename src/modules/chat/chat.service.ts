@@ -929,7 +929,8 @@ export class ChatService {
 
   private async notifyOrderTaker(conversation: any, guestMessage: string, roomNo?: string, mediaUrl?: string, savedOrder?: { departmentId: string | null; departmentKey: string; departmentName: string; urgency: string } | null) {
     try {
-      const ORDER_TAKER_PHONE = (process.env.ORDER_TAKER_PHONE ?? '+905514072515').replace('+', '')
+      // Yedek numara Railway'den gelir; tanımlı değilse yedek yoktur.
+      const ORDER_TAKER_PHONE = (process.env.ORDER_TAKER_PHONE ?? '').replace('+', '')
       const { hotel, guest } = conversation
 
       const accessToken = hotel.waAccessToken ?? ''
@@ -979,9 +980,15 @@ export class ChatService {
         }
       }
 
-      // Eski Order Taker numarası (yedek)
-      if (ORDER_TAKER_PHONE && ORDER_TAKER_PHONE.length >= 10) {
+      // YEDEK NUMARA — yalnızca departmanda vardiyada kimse bulunamadıysa.
+      // Böylece normal işleyişte bildirim sadece görevdeki personele gider;
+      // yedek numara talebin kaybolmasını önleyen son çaredir.
+      if (recipients.size === 0 && ORDER_TAKER_PHONE && ORDER_TAKER_PHONE.length >= 10) {
         recipients.add(ORDER_TAKER_PHONE)
+        this.app.log.warn(
+          { department: savedOrder?.departmentName },
+          'Vardiyada personel yok — bildirim yedek numaraya gönderildi',
+        )
       }
 
       if (recipients.size === 0) {
