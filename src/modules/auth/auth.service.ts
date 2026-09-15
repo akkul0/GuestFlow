@@ -31,7 +31,7 @@ export class AuthService {
       data: { lastLoginAt: new Date() },
     })
 
-    const accessToken = this.signAccessToken(user.id, user.hotelId, user.role)
+    const accessToken = this.signAccessToken(user.id, user.hotelId, user.role, user.departmentId)
     const refreshToken = await this.createRefreshToken(user.id)
 
     return {
@@ -67,7 +67,7 @@ export class AuthService {
       data: { revokedAt: new Date() },
     })
 
-    const accessToken = this.signAccessToken(stored.user.id, stored.user.hotelId, stored.user.role)
+    const accessToken = this.signAccessToken(stored.user.id, stored.user.hotelId, stored.user.role, stored.user.departmentId)
     const newRefreshToken = await this.createRefreshToken(stored.user.id)
 
     return { accessToken, refreshToken: newRefreshToken, expiresIn: 15 * 60 }
@@ -93,12 +93,23 @@ export class AuthService {
         role: true,
         language: true,
         lastLoginAt: true,
+        departmentId: true,
+        department: { select: { id: true, name: true, key: true, guestAccess: true } },
         hotel: { select: { id: true, name: true, slug: true, aiEnabled: true, autoTranslate: true } },
       },
     })
 
     if (!user) throw createError(404, 'User not found')
-    return user
+
+    // Panel, menuyu bu iki alana gore kurar:
+    //  - departmentName: sef hangi departmanin basinda
+    //  - guestAccess: sohbet/misafir/yorum bolumlerini gorebilir mi
+    const isOrderTaker = user.role === 'ORDER_TAKER'
+    return {
+      ...user,
+      departmentName: user.department?.name ?? null,
+      guestAccess: isOrderTaker ? (user.department?.guestAccess ?? false) : true,
+    }
   }
 
   async changePassword(userId: string, { currentPassword, newPassword }: ChangePasswordBody) {
@@ -115,8 +126,14 @@ export class AuthService {
     await this.logout(userId) // Force re-login after password change
   }
 
-  private signAccessToken(userId: string, hotelId: string, role: string): string {
-    return this.app.jwt.sign({ sub: userId, hotelId, role })
+  private signAccessToken(
+    userId: string,
+    hotelId: string,
+    role: string,
+    departmentId?: string | null,
+  ): string {
+    // departmentId, ORDER_TAKER'in yalnizca kendi departmanini gormesi icin tasinir
+    return this.app.jwt.sign({ sub: userId, hotelId, role, departmentId: departmentId ?? null })
   }
 
   private async createRefreshToken(userId: string): Promise<string> {
