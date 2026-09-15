@@ -224,7 +224,7 @@ export async function reportsRoutes(app: FastifyInstance) {
 
   app.post('/daily/generate', {
     schema: { tags: ['Reports'], summary: 'Manually generate daily report for today' },
-    preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
+    preHandler: requireRole('HOTEL_ADMIN', 'MANAGER', 'SUPER_ADMIN'),
     handler: async (request, reply) => {
       const report = await generateDailyReport(app, request.user.hotelId)
       return reply.send(report)
