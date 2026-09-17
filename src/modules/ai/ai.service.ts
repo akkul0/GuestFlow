@@ -11,8 +11,26 @@ type ConversationWithContext = Conversation & {
 const DEFAULT_MODEL = 'claude-sonnet-4-5'
 const FAST_MODEL = 'claude-haiku-4-5-20251001'
 
-const HOTEL_LAT = 36.8706211
-const HOTEL_LON = 31.014864
+// Otelin konumu ARTIK KODA GOMULU DEGIL — hotels.latitude / hotels.longitude
+// alanlarindan gelir. Koordinat tanimli degilse konum bazli ozellikler (hava
+// durumu, yakin mekan, yol tarifi) sessizce devre disi kalir; AI yanit vermeye
+// devam eder.
+type HotelGeo = {
+  lat: number
+  lon: number
+  /** Arama sorgularina eklenen bolge ipucu, orn. "Belek, Antalya, Turkiye" */
+  area: string
+}
+
+/** Otel kaydindan konum bilgisini cikarir; koordinat yoksa null doner. */
+function geoOf(hotel: { latitude?: number | null; longitude?: number | null; address?: string | null }): HotelGeo | null {
+  if (hotel?.latitude == null || hotel?.longitude == null) return null
+  return {
+    lat: hotel.latitude,
+    lon: hotel.longitude,
+    area: (hotel.address ?? '').trim(),
+  }
+}
 
 const PLACE_KEYWORDS: { keywords: string[]; type: string; label: string }[] = [
   { keywords: ['eczane', 'pharmacy', 'apteka', 'apotheke'], type: 'pharmacy', label: 'Eczane' },
@@ -91,13 +109,14 @@ export class AiService {
     })
   }
 
-  private async getWeather(): Promise<string> {
+  private async getWeather(geo: HotelGeo | null): Promise<string> {
     try {
+      if (!geo) return ''
       const apiKey = process.env.OPENWEATHER_API_KEY
       if (!apiKey) return ''
 
       const res = await fetch(
-        `https://api.openweathermap.org/data/2.5/weather?lat=${HOTEL_LAT}&lon=${HOTEL_LON}&appid=${apiKey}&units=metric&lang=tr`
+        `https://api.openweathermap.org/data/2.5/weather?lat=${geo.lat}&lon=${geo.lon}&appid=${apiKey}&units=metric&lang=tr`
       )
       const data = await res.json() as any
 
@@ -107,18 +126,19 @@ export class AiService {
       const humidity = data.main.humidity
       const wind = Math.round(data.wind.speed * 3.6)
 
-      return `\nŞu anki hava durumu (Belek): ${temp}°C (hissedilen ${feelsLike}°C), ${desc}, nem %${humidity}, rüzgar ${wind} km/h`
+      return `\nŞu anki hava durumu: ${temp}°C (hissedilen ${feelsLike}°C), ${desc}, nem %${humidity}, rüzgar ${wind} km/h`
     } catch {
       return ''
     }
   }
 
-  private async getNearbyPlaces(type: string, label: string): Promise<string> {
+  private async getNearbyPlaces(type: string, label: string, geo: HotelGeo | null): Promise<string> {
     try {
+      if (!geo) return ''
       const apiKey = process.env.GOOGLE_PLACES_API_KEY
       if (!apiKey) return ''
 
-      const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${HOTEL_LAT},${HOTEL_LON}&rankby=distance&type=${type}&key=${apiKey}&language=tr`
+      const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${geo.lat},${geo.lon}&rankby=distance&type=${type}&key=${apiKey}&language=tr`
       const res = await fetch(url)
       const data = await res.json() as any
 
@@ -126,7 +146,7 @@ export class AiService {
 
       const places = data.results.slice(0, 3).map((p: any) => {
         const dist = p.geometry?.location
-          ? Math.round(this.calcDistance(HOTEL_LAT, HOTEL_LON, p.geometry.location.lat, p.geometry.location.lng) * 10) / 10
+          ? Math.round(this.calcDistance(geo.lat, geo.lon, p.geometry.location.lat, p.geometry.location.lng) * 10) / 10
           : '?'
         const rating = p.rating ? ` ⭐${p.rating}` : ''
         const open = p.opening_hours?.open_now === true ? ' 🟢 Açık' : p.opening_hours?.open_now === false ? ' 🔴 Kapalı' : ''
@@ -139,8 +159,9 @@ export class AiService {
     }
   }
 
-  private async getDirections(destination: string): Promise<string> {
+  private async getDirections(destination: string, geo: HotelGeo | null): Promise<string> {
     try {
+      if (!geo) return ''
       const apiKey = process.env.GOOGLE_PLACES_API_KEY
       if (!apiKey) return ''
 
@@ -148,7 +169,7 @@ export class AiService {
       let destLng: number | undefined
 
       // Önce Find Place ile gerçek mekanı bul (daha doğru)
-      const findUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(destination + ' Belek Antalya')}&inputtype=textquery&fields=geometry,name&key=${apiKey}&language=tr`
+      const findUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(geo.area ? `${destination} ${geo.area}` : destination)}&inputtype=textquery&fields=geometry,name&key=${apiKey}&language=tr`
       const findRes = await fetch(findUrl)
       const findData = await findRes.json() as any
 
@@ -157,7 +178,7 @@ export class AiService {
         destLng = findData.candidates[0].geometry.location.lng
       } else {
         // Bulunamazsa Geocoding'e düş
-        const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(destination + ' Belek Antalya Turkey')}&key=${apiKey}&language=tr`
+        const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(geo.area ? `${destination} ${geo.area}` : destination)}&key=${apiKey}&language=tr`
         const geocodeRes = await fetch(geocodeUrl)
         const geocodeData = await geocodeRes.json() as any
         if (!geocodeData.results?.length) return ''
@@ -168,7 +189,7 @@ export class AiService {
       if (destLat === undefined || destLng === undefined) return ''
 
       // Directions API
-      const dirUrl = `https://maps.googleapis.com/maps/api/directions/json?origin=${HOTEL_LAT},${HOTEL_LON}&destination=${destLat},${destLng}&mode=walking&key=${apiKey}&language=tr`
+      const dirUrl = `https://maps.googleapis.com/maps/api/directions/json?origin=${geo.lat},${geo.lon}&destination=${destLat},${destLng}&mode=walking&key=${apiKey}&language=tr`
       const dirRes = await fetch(dirUrl)
       const dirData = await dirRes.json() as any
 
@@ -184,7 +205,7 @@ export class AiService {
         return `${i + 1}. ${instruction} (${s.distance.text})`
       }).join('\n')
 
-      const mapsLink = `https://www.google.com/maps/dir/${HOTEL_LAT},${HOTEL_LON}/${destLat},${destLng}`
+      const mapsLink = `https://www.google.com/maps/dir/${geo.lat},${geo.lon}/${destLat},${destLng}`
 
       return `\n\n🗺️ **${destination} Yol Tarifi:**\n🚶 Yürüyerek: ${duration} (${distance})\n\n📍 Adımlar:\n${steps}\n\n🔗 Google Maps: ${mapsLink}`
     } catch {
@@ -192,13 +213,13 @@ export class AiService {
     }
   }
 
-  private async getPlaceDetails(placeName: string): Promise<string> {
+  private async getPlaceDetails(placeName: string, geo: HotelGeo | null): Promise<string> {
     try {
       const apiKey = process.env.GOOGLE_PLACES_API_KEY
       if (!apiKey) return ''
 
       // Önce mekanı bul (Find Place)
-      const findUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(placeName + ' Belek Antalya')}&inputtype=textquery&fields=place_id,name&key=${apiKey}&language=tr`
+      const findUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(geo?.area ? `${placeName} ${geo.area}` : placeName)}&inputtype=textquery&fields=place_id,name&key=${apiKey}&language=tr`
       const findRes = await fetch(findUrl)
       const findData = await findRes.json() as any
 
@@ -290,7 +311,8 @@ export class AiService {
     if (!lastMessage || lastMessage.direction === 'OUTBOUND') return null
 
     const currentTime = this.getCurrentTime()
-    const weather = await this.getWeather()
+    const geo = geoOf(hotel)
+    const weather = await this.getWeather(geo)
 
     // Konum bazlı arama (öncelik sırası: detay > yol tarifi > yakın arama)
     let places = ''
@@ -299,17 +321,17 @@ export class AiService {
     const directionRequest = detectDirectionRequest(lastText)
 
     if (detailRequest) {
-      places = await this.getPlaceDetails(detailRequest)
+      places = await this.getPlaceDetails(detailRequest, geo)
       // Detay bulunamazsa yol tarifine düş
       if (!places && directionRequest) {
-        places = await this.getDirections(directionRequest)
+        places = await this.getDirections(directionRequest, geo)
       }
     } else if (directionRequest) {
-      places = await this.getDirections(directionRequest)
+      places = await this.getDirections(directionRequest, geo)
     } else {
       const placeSearch = detectPlaceSearch(lastText)
       if (placeSearch) {
-        places = await this.getNearbyPlaces(placeSearch.type, placeSearch.label)
+        places = await this.getNearbyPlaces(placeSearch.type, placeSearch.label, geo)
       }
     }
 
