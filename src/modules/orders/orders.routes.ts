@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { authenticate, requireRole, departmentScopeOf } from '../../common/guards/auth.guard'
 import type { JwtPayload } from '../../common/guards/auth.guard'
+import { slaTimestampsFor } from './sla.service'
 import { createError } from '../../common/utils/errors'
 import { z } from 'zod'
 
@@ -417,6 +418,14 @@ export async function ordersRoutes(app: FastifyInstance) {
         }
       }
 
+      // SLA zaman damgaları: ilk dokunuş ve kapanış otomatik işlenir
+      const slaPatch = body.status
+        ? slaTimestampsFor(body.status, {
+            acknowledgedAt: order.acknowledgedAt,
+            resolvedAt: order.resolvedAt,
+          })
+        : {}
+
       const updated = await app.prisma.order.update({
         where: { id: order.id },
         data: {
@@ -424,6 +433,7 @@ export async function ordersRoutes(app: FastifyInstance) {
           ...(body.departmentId !== undefined && { departmentId: body.departmentId }),
           ...(body.urgency !== undefined && { urgency: body.urgency }),
           ...(body.note !== undefined && { note: body.note }),
+          ...slaPatch,
         },
         include: {
           department: { select: { id: true, name: true, key: true } },
