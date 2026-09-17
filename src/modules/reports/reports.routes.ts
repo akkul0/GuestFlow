@@ -502,4 +502,84 @@ export async function buildAndMailDailyReport(
     pdf,
     filename: `stayline-gunluk-rapor-${fileDate}.pdf`,
   })
+  // ── GET /reports/order-load — TALEP YOGUNLUK ANALIZI ──────────────
+  // Hangi saatte hangi departmana kac talep dusuyor + ortalama yanit suresi.
+  // Vardiya planlamasi icin: "cuma aksamlari 20:00-22:00 HK yogun" gibi
+  // cikarimlar bu veriden yapilir.
+  app.get<{ Querystring: { days?: string } }>('/order-load', {
+    preHandler: requireRole('HOTEL_ADMIN', 'MANAGER', 'SUPER_ADMIN'),
+    schema: { tags: ['Reports'], summary: 'Talep yogunlugu ve SLA ozeti' },
+    handler: async (request, reply) => {
+      const hotelId = (request.user as { hotelId: string }).hotelId
+      const days = Math.min(Math.max(parseInt(request.query.days ?? '30', 10) || 30, 1), 90)
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+
+      const orders = await app.prisma.order.findMany({
+        where: { hotelId, deletedAt: null, isRequest: true, createdAt: { gte: since } },
+        select: {
+          createdAt: true,
+          acknowledgedAt: true,
+          resolvedAt: true,
+          escalatedAt: true,
+          departmentKey: true,
+          department: { select: { name: true } },
+        },
+      })
+
+      // Saat x gun kirilimi (Europe/Istanbul)
+      const TZ = 3 * 60 * 60 * 1000
+      const byHour = Array.from({ length: 24 }, (_, h) => ({ hour: h, count: 0 }))
+      const byWeekday = Array.from({ length: 7 }, (_, d) => ({ weekday: d, count: 0 }))
+      const byDept = new Map<string, { name: string; count: number; peakHour: number; hours: number[] }>()
+
+      let ackTotal = 0, ackCount = 0, resTotal = 0, resCount = 0, escalated = 0
+
+      for (const o of orders) {
+        const local = new Date(o.createdAt.getTime() + TZ)
+        const h = local.getUTCHours()
+        const wd = local.getUTCDay()
+        byHour[h].count += 1
+        byWeekday[wd].count += 1
+
+        const name = o.department?.name ?? o.departmentKey ?? 'Diger'
+        if (!byDept.has(name)) byDept.set(name, { name, count: 0, peakHour: 0, hours: Array(24).fill(0) })
+        const d = byDept.get(name)!
+        d.count += 1
+        d.hours[h] += 1
+
+        if (o.acknowledgedAt) {
+          ackTotal += (o.acknowledgedAt.getTime() - o.createdAt.getTime()) / 60000
+          ackCount += 1
+        }
+        if (o.resolvedAt) {
+          resTotal += (o.resolvedAt.getTime() - o.createdAt.getTime()) / 60000
+          resCount += 1
+        }
+        if (o.escalatedAt) escalated += 1
+      }
+
+      const departments = [...byDept.values()]
+        .map((d) => ({
+          name: d.name,
+          count: d.count,
+          peakHour: d.hours.indexOf(Math.max(...d.hours)),
+        }))
+        .sort((a, b) => b.count - a.count)
+
+      return reply.send({
+        days,
+        total: orders.length,
+        byHour,
+        byWeekday,
+        departments,
+        sla: {
+          avgAckMinutes: ackCount ? Math.round(ackTotal / ackCount) : null,
+          avgResolveMinutes: resCount ? Math.round(resTotal / resCount) : null,
+          escalatedCount: escalated,
+          escalatedRate: orders.length ? Math.round((escalated / orders.length) * 100) : 0,
+        },
+      })
+    },
+  })
+
 }
