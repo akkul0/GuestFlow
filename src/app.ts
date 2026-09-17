@@ -22,6 +22,13 @@ import { aiRoutes } from './modules/ai/ai.routes'
 import { ordersRoutes } from './modules/orders/orders.routes'
 import { voiceRoutes } from './modules/voice/voice.routes'
 
+declare module 'fastify' {
+  interface FastifyRequest {
+    /** İsteğin ayrıştırılmamış gövdesi — webhook imza doğrulaması için. */
+    rawBody?: string
+  }
+}
+
 export async function buildApp() {
   const app = Fastify({
     logger: {
@@ -56,6 +63,25 @@ export async function buildApp() {
 
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } }) // 25MB
   await app.register(formbody)
+
+  // ── Ham gövde (Meta webhook imzası için) ─────
+  // Meta, X-Hub-Signature-256 başlığını gövdenin BAYT BAYT halinden üretir.
+  // Fastify JSON'u ayrıştırdıktan sonra yeniden stringify edersek boşluk/sıra
+  // farkı yüzünden imza tutmaz. Bu yüzden ham metni ayrıştırmadan önce saklıyoruz.
+  app.addContentTypeParser(
+    'application/json',
+    { parseAs: 'string' },
+    (req, body: string, done) => {
+      req.rawBody = body
+      if (!body || body.trim().length === 0) return done(null, {})
+      try {
+        done(null, JSON.parse(body))
+      } catch (err) {
+        ;(err as Error & { statusCode?: number }).statusCode = 400
+        done(err as Error, undefined)
+      }
+    },
+  )
 
   // ── Database & Cache ─────────────────────────
   await app.register(prismaPlugin)
