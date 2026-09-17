@@ -474,13 +474,13 @@ export async function computeMgbData(
 export async function buildAndMailDailyReport(
   app: FastifyInstance,
   aiService: AiService,
-  hotel: { id: string; name: string; reportEmail: string | null },
+  hotel: { id: string; name: string; reportEmail: string | null; googlePlaceId?: string | null },
   preAnalysis?: ReviewAnalysisResult,
   trend?: WeeklyTrend | null,
 ): Promise<{ ok: boolean; error?: string }> {
   if (!hotel.reportEmail) return { ok: false, error: 'reportEmail tanımlı değil.' }
 
-  const reviews = preAnalysis ?? (await fetchAndAnalyzeReviews(app, aiService))
+  const reviews = preAnalysis ?? (await fetchAndAnalyzeReviews(app, aiService, hotel.googlePlaceId ?? ''))
   const mgb = await computeMgbData(app, hotel.id, 'today')
 
   const dateLabel = new Date().toLocaleDateString('tr-TR', {
