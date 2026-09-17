@@ -16,8 +16,12 @@ export async function reviewsRoutes(app: FastifyInstance) {
   // POST /reviews/analyze — "Analiz Et" butonu. Canlı çeker + analiz eder.
   app.post('/analyze', {
     schema: { tags: ['Reviews'], summary: 'Fetch & analyze Google reviews' },
-    handler: async (_request, reply) => {
-      const result = await fetchAndAnalyzeReviews(app, aiService)
+    handler: async (request, reply) => {
+      const hotel = await app.prisma.hotel.findUnique({
+        where: { id: request.user.hotelId },
+        select: { googlePlaceId: true },
+      })
+      const result = await fetchAndAnalyzeReviews(app, aiService, hotel?.googlePlaceId ?? '')
       return reply.send(result)
     },
   })

@@ -32,21 +32,25 @@ export interface ReviewAnalysisResult {
   reviews: AnalyzedReview[]
 }
 
-// Google Place ID — koda gömülü (The X Belek).
-const PLACE_ID = 'ChIJU_8aZJZ9wxQRH9FU58Mnzw0'
-
+// Google Place ID ARTIK KODA GOMULU DEGIL — hotels.googlePlaceId alanindan
+// gelir. Cok otelli yapida her otelin kendi Google isletme kaydi vardir;
+// gomulu tek ID butun otellerin raporuna ayni yorumlari koyardi.
 export async function fetchAndAnalyzeReviews(
   app: FastifyInstance,
   aiService: AiService,
+  placeId: string,
 ): Promise<ReviewAnalysisResult> {
   const apiKey = process.env.OUTSCRAPER_API_KEY
   if (!apiKey) throw createError(500, 'Outscraper API anahtarı yapılandırılmamış.')
+  if (!placeId) {
+    throw createError(400, 'Otelin Google Place ID\'si tanımlı değil (otel ayarları → googlePlaceId).')
+  }
 
   // 1) Outscraper'dan yorumları çek (en yeni sıralı)
   let payload: any
   try {
     const url = new URL('https://api.outscraper.cloud/maps/reviews-v3')
-    url.searchParams.set('query', PLACE_ID)
+    url.searchParams.set('query', placeId)
     url.searchParams.set('reviewsLimit', '50')
     url.searchParams.set('sort', 'newest')
     url.searchParams.set('language', 'en')
