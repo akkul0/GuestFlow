@@ -212,13 +212,31 @@ export async function whatsappRoutes(app: FastifyInstance) {
           mediaMimeType = message.document?.mime_type
         }
 
-        const hotel = await app.prisma.hotel.findFirst({
+        // ── OTEL ESLESTIRME ──────────────────────────────────────
+        // Gelen mesaj, Meta'nin bildirdigi phone_number_id ile otele baglanir.
+        // Onceki halinde eslesme bulunamazsa `findFirst({ isActive: true })`
+        // ile RASTGELE bir aktif otel seciliyordu. Tek otelde fark etmez; ikinci
+        // otel baglandigi gun A otelinin misafir mesaji B oteline duserdi.
+        // Artik eslesme yoksa isleme girmiyoruz: sessiz veri karismasi yerine
+        // gorunur bir log birakiyoruz.
+        const targetHotel = await app.prisma.hotel.findFirst({
           where: { waPhoneNumberId: phoneNumberId },
         })
 
-        const targetHotel = hotel ?? await app.prisma.hotel.findFirst({ where: { isActive: true } })
         if (!targetHotel) {
-          app.log.warn({ phoneNumberId }, 'No hotel found for phone number id')
+          app.log.error(
+            { phoneNumberId },
+            'Webhook: bu phone_number_id hiçbir otelle eşleşmiyor — mesaj işlenmedi. ' +
+              'Otel ayarlarında waPhoneNumberId tanımlı ve doğru mu?',
+          )
+          return
+        }
+
+        if (!targetHotel.isActive) {
+          app.log.warn(
+            { phoneNumberId, hotelId: targetHotel.id },
+            'Webhook: otel pasif — mesaj işlenmedi',
+          )
           return
         }
 
