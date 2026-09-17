@@ -35,6 +35,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
           id: true, name: true, slug: true, phone: true, email: true, timezone: true,
           locale: true, aiEnabled: true, aiModel: true, aiSystemPrompt: true, autoTranslate: true,
           waPhoneNumberId: true, waBusinessId: true, googlePlaceId: true,
+          latitude: true, longitude: true, address: true,
           autoWelcomeEnabled: true, welcomeTemplateName: true, welcomeTemplateLang: true,
           // Never return waAccessToken or waWebhookSecret
         },
@@ -52,6 +53,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
       name?: string; phone?: string; email?: string; timezone?: string
       aiEnabled?: boolean; aiModel?: string; aiSystemPrompt?: string; autoTranslate?: boolean
       waPhoneNumberId?: string; waBusinessId?: string; waAccessToken?: string; waWebhookSecret?: string
+      googlePlaceId?: string | null; latitude?: number | null; longitude?: number | null; address?: string
       autoWelcomeEnabled?: boolean; welcomeTemplateName?: string | null; welcomeTemplateLang?: string
     }
   }>('/:id/settings', {
