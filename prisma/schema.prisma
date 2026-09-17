@@ -37,6 +37,8 @@ model Hotel {
   reportEmail         String?
   // Otomatik karşılama: yeni misafir eklenince onaylı şablon gönderilir
   autoWelcomeEnabled  Boolean @default(false)
+  // Talep kac dakika icinde ilk dokunusu almazsa yoneticiye eskale edilir
+  slaMinutes          Int     @default(15)
   welcomeTemplateName String?
   welcomeTemplateLang String? @default("tr")
   waAccessToken     String?
@@ -459,6 +461,10 @@ model Order {
   createdAt     DateTime      @default(now())
   deletedAt     DateTime?
   updatedAt     DateTime      @updatedAt
+  // SLA takibi: ilk dokunus, kapanis ve eskalasyon zamanlari
+  acknowledgedAt DateTime?    // talep ilk kez OPEN disina cikti
+  resolvedAt     DateTime?    // talep tamamlandi
+  escalatedAt    DateTime?    // sure asimi nedeniyle yoneticiye bildirildi
 
   @@index([hotelId, status])
   @@index([hotelId, isComplaint])
