@@ -22,12 +22,19 @@ export async function hotelsRoutes(app: FastifyInstance) {
     schema: { tags: ['Hotels'], summary: 'Get hotel settings' },
     preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
     handler: async (request, reply) => {
-      const hotel = await app.prisma.hotel.findFirst({
-        where: { id: request.params.id, id_2: request.user.hotelId },
+      // Kiracı izolasyonu: kendi oteli değilse (ve SUPER_ADMIN değilse) göremez.
+      // Önceki hâlinde `id_2` diye var olmayan bir alan kullanılıyordu; Prisma
+      // bunu geçersiz sayıp her çağrıda hata fırlatıyordu, uç hiç çalışmıyordu.
+      if (request.user.hotelId !== request.params.id && request.user.role !== 'SUPER_ADMIN') {
+        throw createError(403, 'Cannot view another hotel')
+      }
+
+      const hotel = await app.prisma.hotel.findUnique({
+        where: { id: request.params.id },
         select: {
           id: true, name: true, slug: true, phone: true, email: true, timezone: true,
           locale: true, aiEnabled: true, aiModel: true, aiSystemPrompt: true, autoTranslate: true,
-          waPhoneNumberId: true, waBusinessId: true,
+          waPhoneNumberId: true, waBusinessId: true, googlePlaceId: true,
           autoWelcomeEnabled: true, welcomeTemplateName: true, welcomeTemplateLang: true,
           // Never return waAccessToken or waWebhookSecret
         },
@@ -205,9 +212,3 @@ export async function hotelsRoutes(app: FastifyInstance) {
   })
 }
 
-// Prisma doesn't know id_2 — use a workaround for the settings endpoint
-declare module '@prisma/client' {
-  interface HotelWhereInput {
-    id_2?: string
-  }
-}
