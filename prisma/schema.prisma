@@ -33,6 +33,7 @@ model Hotel {
   waBusinessId      String?
   // Düşük puanlı Google yorumları bu WhatsApp numarasına bildirilir
   guestRelationsPhone String?
+  googlePlaceId       String?
   // Gece 23:30 PDF raporu bu adrese e-postalanır
   reportEmail         String?
   // Otomatik karşılama: yeni misafir eklenince onaylı şablon gönderilir
