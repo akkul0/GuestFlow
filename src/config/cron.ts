@@ -51,14 +51,25 @@ export function startCronJobs(app: FastifyInstance) {
           waPhoneNumberId: true,
           guestRelationsPhone: true,
           reportEmail: true,
+          googlePlaceId: true,
         },
       })
 
       for (const hotel of hotels) {
+        // Google Place ID tanimsizsa yorum cekilemez — sessizce atlamak yerine
+        // uyar, yoksa "rapor neden bos" sorusunun cevabi gorunmez olur.
+        if (!hotel.googlePlaceId) {
+          logger.warn(
+            { hotelId: hotel.id, hotelName: hotel.name },
+            'Yorum analizi atlandı: googlePlaceId tanımlı değil',
+          )
+          continue
+        }
+
         // 1) Çek + analiz et
         let analysis: ReviewAnalysisResult
         try {
-          analysis = await fetchAndAnalyzeReviews(app, aiService)
+          analysis = await fetchAndAnalyzeReviews(app, aiService, hotel.googlePlaceId)
           logger.info(
             { hotelId: hotel.id, total: analysis.last24h.total },
             'Zamanlanmış yorum analizi tamamlandı',
