@@ -21,6 +21,7 @@ import { hotelsRoutes } from './modules/hotels/hotels.routes'
 import { aiRoutes } from './modules/ai/ai.routes'
 import { ordersRoutes } from './modules/orders/orders.routes'
 import { voiceRoutes } from './modules/voice/voice.routes'
+import { reviewsRoutes } from './modules/reviews/reviews.routes'
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -126,6 +127,8 @@ export async function buildApp() {
   await app.register(hotelsRoutes, { prefix: `${prefix}/hotels` })
   await app.register(aiRoutes, { prefix: `${prefix}/ai` })
   await app.register(ordersRoutes, { prefix: `${prefix}/orders` })
+  // NOT: reviewsRoutes daha once hic KAYDEDILMEMISTI — /reviews/analyze 404 veriyordu.
+  await app.register(reviewsRoutes, { prefix: `${prefix}/reviews` })
   // Sesli asistan (telefon) — JWT yok, x-voice-secret ile korunur
   await app.register(voiceRoutes, { prefix: `${prefix}/voice` })
 
