@@ -29,10 +29,19 @@ model Hotel {
   updatedAt   DateTime @updatedAt
 
   // WhatsApp Business API config
-  waPhoneNumberId   String?
+  // @unique: ayni numara ID'si iki otele yazilamaz. Webhook gelen mesaji bu
+  // alanla esler; benzersiz olmazsa A otelinin mesaji B oteline dusebilir.
+  waPhoneNumberId   String?  @unique
   waBusinessId      String?
+  // Otelin konumu — hava durumu, yakin mekan aramasi ve yol tarifi icin.
+  // Onceden ai.service'e gomuluydu (The X Belek); otel basina tasindi.
+  latitude          Float?
+  longitude         Float?
   // Düşük puanlı Google yorumları bu WhatsApp numarasına bildirilir
   guestRelationsPhone String?
+  // Google yorum analizi icin otelin Google Place ID'si.
+  // Kolon 20260625100000 migration'i ile eklenmisti ama semaya yazilmamisti;
+  // bu satir olmadan bir sonraki `migrate dev` kolonu DUSURUR.
   googlePlaceId       String?
   // Gece 23:30 PDF raporu bu adrese e-postalanır
   reportEmail         String?
