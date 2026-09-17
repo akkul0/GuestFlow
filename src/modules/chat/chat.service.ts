@@ -5,6 +5,69 @@ import { WhatsAppService } from '../whatsapp/whatsapp.service'
 import { AiService } from '../ai/ai.service'
 import { SendMessageBody, ListConversationsQuery } from './chat.schema'
 
+
+// ─────────────────────────────────────────────────────────────
+// TALEP BIRLESTIRME KORUMALARI
+//
+// Sorun: misafir "iki havlu istiyorum" yazip siparis acildiktan sonra
+// "yemek saatleri nedir?" diye sordugunda, eski mantik son 4 mesaji
+// birlestirip YENIDEN talep sayiyor; ayni talepten ikinci siparis
+// aciliyor ve yemek sorusu da Kat Hizmetleri'ne dusuyordu.
+//
+// Cozum uc katman:
+//  1) Yalnizca "devam" niteligindeki mesajlar birlestirmeyi tetikler
+//  2) Yalnizca son 10 dakikadaki, henuz talebe donusmemis mesajlar girer
+//  3) Ayni talepten kisa sure icinde ikinci siparis acilmaz (mukerrer kilidi)
+// ─────────────────────────────────────────────────────────────
+
+/** Birlestirme penceresi: bundan eski mesajlar yeni talebe yapismaz. */
+const MERGE_WINDOW_MS = 10 * 60 * 1000
+
+/** Mukerrer siparis kilidi: ayni oda+departmanda bu sure icinde tekrar acilmaz. */
+const DUPLICATE_WINDOW_MS = 5 * 60 * 1000
+
+/** Kisa onay/dolgu ifadeleri — tek baslarina anlam tasimaz, oncekine baglidir. */
+const CONTINUATION_WORDS = [
+  'evet', 'tamam', 'ok', 'okey', 'olur', 'peki', 'lutfen', 'lütfen',
+  'tesekkurler', 'teşekkürler', 'sagolun', 'sağolun', 'yes', 'okay', 'please', 'thanks',
+]
+
+/** Soru bildiren kelimeler — isaret olmasa da soru oldugunu gosterir. */
+const QUESTION_WORDS = [
+  'ne', 'nedir', 'neden', 'nasil', 'nasıl', 'nerede', 'nereye', 'nerde',
+  'kacta', 'kaçta', 'kac', 'kaç', 'hangi', 'kim', 'ne zaman', 'var mi', 'var mı',
+  'what', 'when', 'where', 'how', 'which', 'who',
+]
+
+/**
+ * Mesaj onceki talebin DEVAMI mi?
+ * Devam sayilanlar: oda numarasi, kisa onaylar, 3 kelimeyi gecmeyen parcalar.
+ * Devam SAYILMAYAN: sorular ("Yemek saatleri nedir?", "Kahvalti kacta biter"),
+ * yeni konu acan uzun ifadeler.
+ */
+function isContinuation(text: string): boolean {
+  const t = (text ?? '').trim().toLowerCase()
+  if (!t) return false
+
+  // Tam kurulu soru = yeni konu, devam degil
+  if (t.includes('?')) return false
+
+  // Soru isareti unutulmus olabilir: soru kelimesi geciyorsa da devam sayma
+  if (QUESTION_WORDS.some((q) => new RegExp(`(^|\\s)${q}(\\s|$)`).test(t))) return false
+
+  // Sadece rakam/oda numarasi (ornek: "1111", "oda 2316")
+  if (/^(oda\s*)?\d{2,5}$/.test(t)) return true
+
+  // Kisa onay kelimeleri
+  const words = t.split(/\s+/).filter(Boolean)
+  if (words.length <= 2 && words.every((w) => CONTINUATION_WORDS.includes(w.replace(/[.,!]/g, '')))) {
+    return true
+  }
+
+  // Cok kisa parca (3 kelimeye kadar) — muhtemelen onceki cumlenin devami
+  return words.length <= 3
+}
+
 export class ChatService {
   private waService: WhatsAppService
   private aiService: AiService
@@ -763,19 +826,31 @@ export class ChatService {
     // tekrar değerlendir; böylece "klimam bozuk" + "1111" ayrı geldiğinde de
     // talep doğru algılanır ve Order Taker'a düşer.
     let effectiveText = latestMessage   // Order'a kaydedilecek talep metni
-    if (!analysis.isRequest && !analysis.isComplaint && !hasMedia) {
-      const recentInbound = (messages as any[])
+    let mergedMessageIds: string[] = [] // birleştirmede kullanılan mesajlar
+
+    // Birleştirme YALNIZCA son mesaj "devam" niteliğindeyse yapılır.
+    // "Yemek saatleri nedir?" gibi kendi başına tam bir soru devam DEĞİLDİR;
+    // birleştirilirse önceki talebe yapışır ve yanlış departmana düşer.
+    if (!analysis.isRequest && !analysis.isComplaint && !hasMedia && isContinuation(latestMessage)) {
+      const cutoff = new Date(Date.now() - MERGE_WINDOW_MS)
+      const pending = (messages as any[])
         .filter((m) => m.direction === 'INBOUND')
-        .slice(0, 4)                       // son 4 gelen mesaj (yeni→eski)
+        .filter((m) => !m.consumedAt)              // talebe dönüşmemiş olanlar
+        .filter((m) => new Date(m.createdAt) >= cutoff) // son 10 dakika
+        .slice(0, 4)                               // en fazla 4 mesaj (yeni→eski)
+        .reverse()                                 // eski→yeni
+
+      const recentInbound = pending
         .map((m) => m.body ?? '')
         .filter((t) => t.trim().length > 0)
-        .reverse()                          // eski→yeni sıraya çevir
         .join('. ')
+
       if (recentInbound && recentInbound !== latestMessage) {
         const combined = await this.aiService.analyzeMessage(recentInbound)
         if (combined.isRequest || combined.isComplaint) {
           analysis = combined
           effectiveText = recentInbound    // talep metni birleşik olsun (anlamlı)
+          mergedMessageIds = pending.map((m) => m.id).filter(Boolean)
         }
       }
     }
@@ -860,6 +935,24 @@ export class ChatService {
       return null
     })
 
+    // Bu talebe giren mesajları "tüketildi" işaretle: bir daha birleştirmeye
+    // girmezler, dolayısıyla aynı talepten ikinci bir sipariş açılmaz.
+    if (savedOrder) {
+      const usedIds = new Set<string>(mergedMessageIds)
+      const latestInbound = (messages as any[]).find(
+        (m) => m.direction === 'INBOUND' && !m.consumedAt,
+      )
+      if (latestInbound?.id) usedIds.add(latestInbound.id)
+      if (usedIds.size > 0) {
+        await this.app.prisma.message
+          .updateMany({
+            where: { id: { in: [...usedIds] } },
+            data: { consumedAt: new Date() },
+          })
+          .catch((err: unknown) => this.app.log.error({ err }, 'Mesaj tüketim işareti başarısız'))
+      }
+    }
+
     // Order Taker'a bildirim SADECE iş talebi varsa VE oda no varsa gider.
     // (Saf şikayet → sadece MGB'de görünür, Order Taker'a iş düşmez.)
     if (isRequest && roomNo) {
@@ -879,6 +972,34 @@ export class ChatService {
     isComplaint: boolean,
   ): Promise<{ departmentId: string | null; departmentKey: string; departmentName: string; urgency: string } | null> {
     const hotelId = conversation.hotelId
+
+    // ── MUKERRER KILIDI ────────────────────────────────────────
+    // Aynı misafirden kısa süre içinde, aynı içerikle ikinci bir sipariş
+    // açılmasın. (Misafir "tamam", "teşekkürler" yazdıkça talebin tekrar
+    // tekrar kaydedilmesi sorununa karşı son savunma.)
+    const dupSince = new Date(Date.now() - DUPLICATE_WINDOW_MS)
+    const normalized = requestText.trim().toLowerCase().slice(0, 120)
+    const recentSame = await this.app.prisma.order.findFirst({
+      where: {
+        hotelId,
+        deletedAt: null,
+        status: { in: ['OPEN', 'ACKNOWLEDGED', 'IN_PROGRESS'] },
+        createdAt: { gte: dupSince },
+        ...(conversation.guest?.id
+          ? { guestId: conversation.guest.id }
+          : roomNo
+            ? { roomNumber: roomNo }
+            : {}),
+      },
+      select: { id: true, requestText: true },
+    })
+    if (recentSame && recentSame.requestText.trim().toLowerCase().slice(0, 120) === normalized) {
+      this.app.log.info(
+        { orderId: recentSame.id },
+        'Aynı talep kısa süre içinde zaten açılmış — mükerrer sipariş engellendi',
+      )
+      return null
+    }
 
     // Otelin aktif departmanlarını al
     const departments = await this.app.prisma.department.findMany({
