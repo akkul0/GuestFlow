@@ -741,6 +741,18 @@ export class ChatService {
     })
 
     if (fullConversation) {
+      // 0) DURUM SORGUSU — "talebim ne durumda?" gibi sorularda misafire
+      // gerçek veriyle yanıt ver. AI'nın tahmin yürütmesine bırakmıyoruz;
+      // açık taleplerini veritabanından okuyup net bilgi veriyoruz.
+      const statusReply = await this.buildOrderStatusReply(
+        fullConversation,
+        inboundBody ?? data.body ?? '',
+      )
+      if (statusReply) {
+        await this.sendAutoAiReply(fullConversation, statusReply)
+        return   // durum yanıtı verildi; ayrıca AI cevabı üretmeye gerek yok
+      }
+
       // 1) AI YANITI — sadece AI açıksa otomatik cevap ver
       if (conversation.isAiEnabled && conversation.hotel.aiEnabled) {
         const aiReply = await this.aiService.generateReply(fullConversation)
@@ -811,6 +823,65 @@ export class ChatService {
   private extractRoomNumber(text: string): string | null {
     const match = text.match(/\b(\d{3,4})\b/)
     return match ? match[1] : null
+  }
+
+  /**
+   * "Talebim ne durumda?" sorusunu yakalar ve misafirin AÇIK taleplerini
+   * gerçek veriyle yanıtlar. Talep yoksa veya soru bu değilse null döner
+   * (o zaman normal AI akışı devam eder).
+   */
+  private async buildOrderStatusReply(
+    conversation: any,
+    text: string,
+  ): Promise<string | null> {
+    const t = (text ?? '').trim().toLowerCase()
+    if (!t || t.length > 120) return null
+
+    // Durum sorgusu kalıpları (TR + EN)
+    const asksStatus =
+      /(talep|istek|siparis|sipariş|havlu|order|request).*(ne oldu|durum|nerede|geldi mi|hazir|hazır|status|ready)/.test(t) ||
+      /(ne durumda|durumu ne|hala bekliyorum|hâlâ bekliyorum|unuttunuz mu|gelmedi|any update|still waiting)/.test(t)
+    if (!asksStatus) return null
+
+    const guestId = conversation.guest?.id
+    const roomNo = conversation.guest?.room?.number ?? null
+    if (!guestId && !roomNo) return null
+
+    const open = await this.app.prisma.order.findMany({
+      where: {
+        hotelId: conversation.hotelId,
+        deletedAt: null,
+        isRequest: true,
+        status: { in: ['OPEN', 'ACKNOWLEDGED', 'IN_PROGRESS'] },
+        ...(guestId ? { guestId } : { roomNumber: roomNo }),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 3,
+      select: {
+        requestText: true,
+        status: true,
+        createdAt: true,
+        department: { select: { name: true } },
+      },
+    })
+
+    if (open.length === 0) {
+      return 'Şu anda açık bir talebiniz görünmüyor. Yardımcı olabileceğim başka bir konu varsa yazmanız yeterli.'
+    }
+
+    const lines = open.map((o) => {
+      const mins = Math.max(1, Math.round((Date.now() - o.createdAt.getTime()) / 60000))
+      const durum =
+        o.status === 'IN_PROGRESS'
+          ? 'hazırlanıyor'
+          : o.status === 'ACKNOWLEDGED'
+            ? 'ekibe iletildi'
+            : 'sıraya alındı'
+      const dept = o.department?.name ? ` (${o.department.name})` : ''
+      return `• ${o.requestText}${dept} — ${durum}, ${mins} dakika önce alındı`
+    })
+
+    return `Talebinizin durumu:\n${lines.join('\n')}\n\nEn kısa sürede ilgileniyoruz, teşekkür ederiz.`
   }
 
   private async checkAndNotifyOrderTaker(conversation: any, latestMessage: string, latestMediaUrl?: string) {
