@@ -46,41 +46,55 @@ Misafirin diline göre yanıt ver (Türkçe, İngilizce, Almanca, Rusça vb.).`,
   }
   console.log(`✅ Rooms: ${rooms.length} created`)
 
-  // Create admin user
-  const passwordHash = await bcrypt.hash('Admin123!', 12)
+  // ─────────────────────────────────────────
+  // KULLANICILAR
+  // Sifreler ARTIK KODDA DEGIL, ortam degiskeninden gelir. Repo herkese acik
+  // olabilir; gomulu sifre canli bir yonetici hesabi demekti.
+  // Degisken tanimli degilse kullanici HIC olusturulmaz — bu kasitli: seed her
+  // deploy'da calisiyor, tahmin edilebilir bir sifreyle hesap acmasi kabul edilemez.
+  // ─────────────────────────────────────────
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD
+  const agentPassword = process.env.SEED_AGENT_PASSWORD
 
-  const admin = await prisma.user.upsert({
-    where: { hotelId_username: { hotelId: hotel.id, username: 'admin' } },
-    update: {},
-    create: {
-      hotelId: hotel.id,
-      username: 'admin',
-      email: 'admin@thexbelek.com',
-      passwordHash,
-      firstName: 'Admin',
-      lastName: 'User',
-      role: 'HOTEL_ADMIN',
-      language: 'tr',
-    },
-  })
+  if (adminPassword) {
+    const admin = await prisma.user.upsert({
+      where: { hotelId_username: { hotelId: hotel.id, username: 'admin' } },
+      update: {}, // mevcut kullaniciya DOKUNMA — sifresini sifirlamaz
+      create: {
+        hotelId: hotel.id,
+        username: 'admin',
+        email: 'admin@thexbelek.com',
+        passwordHash: await bcrypt.hash(adminPassword, 12),
+        firstName: 'Admin',
+        lastName: 'User',
+        role: 'HOTEL_ADMIN',
+        language: 'tr',
+      },
+    })
+    console.log(`✅ Admin kullanıcı hazır: ${admin.username}`)
+  } else {
+    console.warn('⚠️  SEED_ADMIN_PASSWORD tanımlı değil — admin kullanıcısı oluşturulmadı')
+  }
 
-  // Create agent user
-  const agent = await prisma.user.upsert({
-    where: { hotelId_username: { hotelId: hotel.id, username: 'serife' } },
-    update: {},
-    create: {
-      hotelId: hotel.id,
-      username: 'serife',
-      email: 'serife@thexbelek.com',
-      passwordHash: await bcrypt.hash('Agent123!', 12),
-      firstName: 'Şerife',
-      lastName: 'Yakışıklı',
-      role: 'AGENT',
-      language: 'tr',
-    },
-  })
-
-  console.log(`✅ Users: ${admin.username} (HOTEL_ADMIN), ${agent.username} (AGENT)`)
+  if (agentPassword) {
+    const agent = await prisma.user.upsert({
+      where: { hotelId_username: { hotelId: hotel.id, username: 'serife' } },
+      update: {},
+      create: {
+        hotelId: hotel.id,
+        username: 'serife',
+        email: 'serife@thexbelek.com',
+        passwordHash: await bcrypt.hash(agentPassword, 12),
+        firstName: 'Şerife',
+        lastName: 'Yakışıklı',
+        role: 'AGENT',
+        language: 'tr',
+      },
+    })
+    console.log(`✅ Agent kullanıcı hazır: ${agent.username}`)
+  } else {
+    console.warn('⚠️  SEED_AGENT_PASSWORD tanımlı değil — agent kullanıcısı oluşturulmadı')
+  }
 
   // Create message templates
   const templates = [
@@ -195,10 +209,8 @@ Misafirin diline göre yanıt ver (Türkçe, İngilizce, Almanca, Rusça vb.).`,
 
   console.log(`✅ Departments: ${departments.length} created`)
   console.log('\n🎉 Seed complete!')
-  console.log('\nLogin credentials:')
   console.log(`  Hotel ID: ${hotel.id}`)
-  console.log('  Admin → username: admin, password: Admin123!')
-  console.log('  Agent → username: serife, password: Agent123!')
+  // Sifreler loga YAZILMAZ: Railway deploy loglari uzun sure saklanir.
 }
 
 main()
