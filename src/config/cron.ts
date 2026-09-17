@@ -16,6 +16,7 @@ import {
 import { isMailerConfigured } from './mailer'
 import { AiService } from '../modules/ai/ai.service'
 import { pollFinishedCalls } from '../modules/voice/voice-poller.service'
+import { checkSlaBreaches } from '../modules/orders/sla.service'
 import { logger } from '../config/logger'
 
 // ─────────────────────────────────────────────────────────────
@@ -177,6 +178,25 @@ export function startCronJobs(app: FastifyInstance) {
     'Europe/Istanbul',
   )
 
+  // Her 5 dakikada — SLA aşımı taraması.
+  // Eşiği aşmış ve hâlâ kimsenin dokunmadığı talepler yöneticiye eskale edilir.
+  let slaRunning = false
+  const slaJob = new CronJob(
+    '*/5 * * * *',
+    async () => {
+      if (slaRunning) return
+      slaRunning = true
+      try {
+        await checkSlaBreaches(app)
+      } finally {
+        slaRunning = false
+      }
+    },
+    null,
+    true,
+    'Europe/Istanbul',
+  )
+
   // 02:00 — süresi dolmuş refresh token temizliği (mevcut davranış)
   const cleanupJob = new CronJob(
     '0 2 * * *',
@@ -192,7 +212,7 @@ export function startCronJobs(app: FastifyInstance) {
   )
 
   logger.info(
-    'Cron jobs started: reviewMorning(09:00), reviewAfternoon(15:30), reviewNight(23:30+mail), voicePoll(2dk), dailyReport(23:55), cleanup(02:00)',
+    'Cron jobs started: reviewMorning(09:00), reviewAfternoon(15:30), reviewNight(23:30+mail), voicePoll(2dk), sla(5dk), dailyReport(23:55), cleanup(02:00)',
   )
-  return { reviewMorning, reviewAfternoon, reviewNight, voicePollJob, dailyReportJob, cleanupJob }
+  return { reviewMorning, reviewAfternoon, reviewNight, voicePollJob, slaJob, dailyReportJob, cleanupJob }
 }
