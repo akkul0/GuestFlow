@@ -1,8 +1,40 @@
+import crypto from 'crypto'
 import { FastifyInstance } from 'fastify'
 import { ChatService } from '../chat/chat.service'
 import { authenticate, requireRole } from '../../common/guards/auth.guard'
 import { sendBulkTemplate } from '../guests/bulk-template.service'
 import { createError } from '../../common/utils/errors'
+
+/**
+ * Meta webhook imza dogrulamasi (X-Hub-Signature-256).
+ *
+ * Meta her webhook isteginde govdenin HMAC-SHA256 ozetini Uygulama Sirri
+ * (App Secret) ile imzalar. Bu kontrol olmadan adresi bilen herkes sahte
+ * misafir mesaji gonderebilir: sahte talep acilir, AI otomatik cevap uretir
+ * ve gercek WhatsApp mesaji gider.
+ *
+ * Karsilastirma timingSafeEqual ile yapilir — normal === karsilastirmasi
+ * karakter karakter erken cikar ve zamanlama uzerinden sizinti birakir.
+ */
+function verifyMetaSignature(
+  rawBody: string,
+  header: string | undefined,
+  appSecret: string,
+): boolean {
+  if (!header || !header.startsWith('sha256=')) return false
+
+  const expectedHex = crypto
+    .createHmac('sha256', appSecret)
+    .update(rawBody, 'utf8')
+    .digest('hex')
+
+  const expected = Buffer.from(expectedHex, 'hex')
+  const provided = Buffer.from(header.slice('sha256='.length), 'hex')
+
+  // Gecersiz hex sessizce kisalir; uzunluk esit degilse timingSafeEqual patlar.
+  if (provided.length !== expected.length) return false
+  return crypto.timingSafeEqual(expected, provided)
+}
 
 async function resolveMediaUrl(accessToken: string, mediaId: string): Promise<string | undefined> {
   try {
@@ -29,7 +61,13 @@ export async function whatsappRoutes(app: FastifyInstance) {
       const token = query['hub.verify_token']
       const challenge = query['hub.challenge']
 
-      const verifyToken = process.env.WA_VERIFY_TOKEN ?? 'stayline_webhook_2026_xY9k'
+      // Gomulu varsayilan YOK: repo herkese acik olabilir, gomulu token
+      // dogrulamayi anlamsiz kilar. Tanimli degilse ayar hatasi olarak dur.
+      const verifyToken = process.env.WA_VERIFY_TOKEN
+      if (!verifyToken) {
+        app.log.error('WA_VERIFY_TOKEN tanımlı değil — webhook doğrulaması reddedildi')
+        return reply.status(503).send('WEBHOOK_NOT_CONFIGURED')
+      }
 
       if (mode === 'subscribe' && token === verifyToken) {
         app.log.info('Meta webhook verified')
@@ -45,9 +83,26 @@ export async function whatsappRoutes(app: FastifyInstance) {
   app.post('/webhook', {
     schema: { tags: ['WhatsApp'], summary: 'Receive Meta WhatsApp events' },
     handler: async (request, reply) => {
+      // ── İMZA DOĞRULAMASI ─────────────────────────────────────
+      // Hiçbir işlem yapmadan ÖNCE. Doğrulanmamış istek 200 bile almaz.
+      const appSecret = process.env.META_APP_SECRET
+      if (!appSecret) {
+        app.log.error('META_APP_SECRET tanımlı değil — webhook isteği reddedildi')
+        return reply.status(503).send('WEBHOOK_NOT_CONFIGURED')
+      }
+
+      const signature = request.headers['x-hub-signature-256'] as string | undefined
+      if (!verifyMetaSignature(request.rawBody ?? '', signature, appSecret)) {
+        app.log.warn(
+          { ip: request.ip, hasSignature: !!signature },
+          'Meta webhook: imza doğrulanamadı — istek reddedildi',
+        )
+        return reply.status(401).send('INVALID_SIGNATURE')
+      }
+
       const body = request.body as any
 
-      app.log.info({ body: JSON.stringify(body) }, 'Meta webhook received')
+      app.log.info('Meta webhook received')
 
       reply.status(200).send('EVENT_RECEIVED')
 
