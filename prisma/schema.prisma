@@ -251,6 +251,9 @@ model Message {
   readAt         DateTime?
   createdAt      DateTime      @default(now())
   deletedAt      DateTime?     // migration ile eklendi; şu an kullanılmıyor (zararsız)
+  // Bu mesaj bir talebe donusturuldu mu? Donustuyse tekrar birlestirmeye
+  // girmez; boylece ayni talepten mukerrer siparis acilmaz.
+  consumedAt     DateTime?
 
   @@map("messages")
 }
