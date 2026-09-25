@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import axios from 'axios'
 import { AiService } from '../ai/ai.service'
-import { getOnShiftUsers, cleanPhone, fallbackPhone } from '../../common/utils/on-shift'
+import { getOnShiftUsers, cleanPhone, fallbackPhoneFor } from '../../common/utils/on-shift'
 
 // ─────────────────────────────────────────────────────────────
 // SESLİ ASİSTAN (telefon) → StayLine
@@ -18,6 +18,83 @@ import { getOnShiftUsers, cleanPhone, fallbackPhone } from '../../common/utils/o
 // Anahtar yoksa/yanlışsa istek reddedilir.
 // ─────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────
+// OTEL ÇÖZÜMLEME
+//
+// Çağrının hangi otele ait olduğu ElevenLabs AJAN KİMLİĞİNDEN bulunur
+// (hotels.elevenLabsAgentId). Eskiden üç ayrı yerde
+// `findFirst({ isActive: true })` vardı: çok otelde bütün telefon
+// talepleri ilk aktif otele yazılırdı.
+//
+// Ajan kimliği gelmezse (ElevenLabs'teki eski araç ayarı göndermiyor
+// olabilir): YALNIZCA tek bir otelde ajan tanımlıysa o otel kullanılır.
+// İkinci otele ajan tanımlandığı anda bu kestirme kendiliğinden kapanır —
+// belirsiz durumda talep yanlış otele yazılmaz, işlenmez ve loglanır.
+// ─────────────────────────────────────────────────────────────
+export async function resolveVoiceHotel(
+  app: FastifyInstance,
+  agentId: string | null | undefined,
+): Promise<{ id: string } | null> {
+  if (agentId) {
+    const hotel = await app.prisma.hotel.findFirst({
+      where: { elevenLabsAgentId: agentId, isActive: true },
+      select: { id: true },
+    })
+    if (!hotel) app.log.error({ agentId }, 'Sesli asistan: bu ajan hiçbir otele bağlı değil')
+    return hotel
+  }
+
+  const configured = await app.prisma.hotel.findMany({
+    where: { elevenLabsAgentId: { not: null }, isActive: true },
+    select: { id: true },
+    take: 2,
+  })
+  if (configured.length === 1) {
+    app.log.warn(
+      'Sesli asistan: istekte ajan kimliği yok — tek yapılandırılmış otel kullanıldı. ' +
+        'ElevenLabs araç ayarına agentId = {{system__agent_id}} ekleyin.',
+    )
+    return configured[0]
+  }
+  app.log.error(
+    { configuredHotels: configured.length },
+    'Sesli asistan: ajan kimliği yok ve otel belirlenemiyor — talep işlenmedi',
+  )
+  return null
+}
+
+// ─────────────────────────────────────────────────────────────
+// TEKRAR İŞLEME KİLİDİ
+//
+// Aynı konuşma hem çağrı sonu webhook'undan hem toplayıcıdan gelebilir.
+// Eskiden webhook yolunda kontrol yoktu: ikisi birden açıksa her telefon
+// talebi iki kez açılırdı. Kilit konuşma başına, 7 gün geçerli ve atomik
+// (SET NX) — iki yol aynı anda gelse bile yalnızca biri kazanır.
+// ─────────────────────────────────────────────────────────────
+const CLAIM_PREFIX = 'voice:processed:'
+const CLAIM_TTL_SECONDS = 7 * 24 * 60 * 60
+
+/** true: bu konuşmayı işleme hakkı bizde. false: başkası işledi/işliyor ya da Redis yok. */
+export async function claimConversation(app: FastifyInstance, conversationId: string): Promise<boolean> {
+  try {
+    const res = await app.redis.set(`${CLAIM_PREFIX}${conversationId}`, '1', 'EX', CLAIM_TTL_SECONDS, 'NX')
+    return res === 'OK'
+  } catch {
+    // Redis yoksa tekrar işleme riskini almamak için atla
+    app.log.warn({ conversationId }, 'Redis erişilemedi — konuşma atlandı')
+    return false
+  }
+}
+
+/** İşleme başarısız olursa kilidi bırak: bir sonraki turda yeniden denensin. */
+export async function releaseConversation(app: FastifyInstance, conversationId: string): Promise<void> {
+  try {
+    await app.redis.del(`${CLAIM_PREFIX}${conversationId}`)
+  } catch {
+    /* kilit 7 gün sonra kendiliğinden düşer */
+  }
+}
+
 export async function voiceRoutes(app: FastifyInstance) {
   const aiService = new AiService(app)
 
@@ -25,7 +102,8 @@ export async function voiceRoutes(app: FastifyInstance) {
     Body: {
       roomNumber?: string
       requestText?: string
-      hotelId?: string
+      /** ElevenLabs araç ayarında: {{system__agent_id}} */
+      agentId?: string
       callerPhone?: string
     }
   }>('/order', {
@@ -49,16 +127,11 @@ export async function voiceRoutes(app: FastifyInstance) {
         return reply.status(400).send({ ok: false, message: 'Talep metni boş.' })
       }
 
-      // Otel: gövdede gelmezse tek otelli kurulumda ilk aktif otel
-      let hotelId = request.body.hotelId
-      if (!hotelId) {
-        const hotel = await app.prisma.hotel.findFirst({
-          where: { isActive: true },
-          select: { id: true },
-        })
-        if (!hotel) return reply.status(404).send({ ok: false, message: 'Otel bulunamadı.' })
-        hotelId = hotel.id
-      }
+      // Otel, ajan kimliğinden çözülür. Gövdedeki hotelId ARTIK KABUL EDİLMEZ:
+      // tek ortak anahtarla gelen bir istek istediği otele talep yazabiliyordu.
+      const hotel = await resolveVoiceHotel(app, request.body.agentId)
+      if (!hotel) return reply.status(404).send({ ok: false, message: 'Otel bulunamadı.' })
+      const hotelId = hotel.id
 
       // ── HIZLI YOL ──
       // Telefon konuşmasında her saniye hissedilir. Bu yüzden sipariş ÖNCE
@@ -133,6 +206,7 @@ export async function voiceRoutes(app: FastifyInstance) {
       data?: {
         transcript?: { role?: string; message?: string }[]
         conversation_id?: string
+        agent_id?: string
         metadata?: { call_duration_secs?: number }
       }
     }
@@ -157,20 +231,34 @@ export async function voiceRoutes(app: FastifyInstance) {
         return reply.send({ ok: true, skipped: 'boş döküm' })
       }
 
+      const hotel = await resolveVoiceHotel(app, request.body.data?.agent_id)
+      if (!hotel) return reply.send({ ok: true, skipped: 'otel belirlenemedi' })
+
+      // Toplayıcı aynı konuşmayı zaten aldıysa ikinci kez açma
+      const conversationId = request.body.data?.conversation_id
+      if (conversationId && !(await claimConversation(app, conversationId))) {
+        return reply.send({ ok: true, skipped: 'zaten işlendi' })
+      }
+
       // ElevenLabs'e HEMEN cevap ver, işi arka planda yap.
       // (Webhook'lar geç cevapta yeniden denenir; işi bekletmeyelim.)
-      void processCallTranscript(app, aiService, turns)
+      void (async () => {
+        const ok = await processCallTranscript(app, aiService, hotel.id, turns)
+        if (!ok && conversationId) await releaseConversation(app, conversationId)
+      })()
       return reply.send({ ok: true })
     },
   })
 }
 
 // Çağrı dökümünü işler: talepleri çıkarır, sipariş açar, bildirim gönderir.
+// Dönüş: true = işlendi (ya da işlenecek talep yoktu), false = hata (yeniden denenmeli).
 export async function processCallTranscript(
   app: FastifyInstance,
   aiService: AiService,
+  hotelId: string,
   turns: { role?: string; message?: string }[],
-): Promise<void> {
+): Promise<boolean> {
   try {
     // Dökümü okunur metne çevir
     const text = turns
@@ -181,15 +269,11 @@ export async function processCallTranscript(
     const extracted = await aiService.extractRequestsFromCall(text)
 
     if (extracted.requests.length === 0) {
-      app.log.info('Çağrıda somut talep yok — sipariş açılmadı')
-      return
+      app.log.info({ hotelId }, 'Çağrıda somut talep yok — sipariş açılmadı')
+      return true
     }
 
-    const hotel = await app.prisma.hotel.findFirst({
-      where: { isActive: true },
-      select: { id: true },
-    })
-    if (!hotel) return
+    const hotel = { id: hotelId }
 
     const roomNumber = extracted.roomNumber
     let guestId: string | null = null
@@ -225,8 +309,10 @@ export async function processCallTranscript(
       // Departman + aciliyet + bildirim
       await enrichVoiceOrder(app, aiService, hotel.id, order.id, requestText, roomNumber)
     }
+    return true
   } catch (err) {
-    app.log.error({ err }, 'Çağrı dökümü işlenemedi')
+    app.log.error({ err, hotelId }, 'Çağrı dökümü işlenemedi')
+    return false
   }
 }
 
@@ -265,7 +351,7 @@ async function notifyOrderTakerFromVoice(
     }
   }
   if (recipients.size === 0) {
-    const backup = fallbackPhone()
+    const backup = await fallbackPhoneFor(app, hotelId)
     if (backup) {
       recipients.add(backup)
       app.log.warn(
