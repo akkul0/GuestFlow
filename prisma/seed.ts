@@ -1,216 +1,98 @@
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
+import { provisionHotelDefaults } from '../src/modules/hotels/hotel-defaults'
+
+// ─────────────────────────────────────────────────────────────
+// GELİŞTİRME SEED'İ — YALNIZCA YEREL / TEST ORTAMI
+//
+// Eskiden bu dosya her deploy'da çalışıyor ve The X Belek otelini,
+// odalarını, kullanıcılarını, şablonlarını canlıda "garanti ediyordu".
+// Çok otelli yapıda canlıya sabit bir otel yazmak yanlış: artık deploy
+// zincirinde YOK (bkz. Dockerfile). Oteller panelden / onboarding'den
+// oluşturulur; varsayılan departman ve şablonları hotel-defaults.ts kurar.
+//
+// Kullanım (yerel):  npm run db:seed
+// Canlıda yanlışlıkla çalışmasın diye NODE_ENV=production iken reddeder.
+// ─────────────────────────────────────────────────────────────
 
 const prisma = new PrismaClient()
 
 async function main() {
-  console.log('🌱 Seeding database...')
+  if (process.env.NODE_ENV === 'production' && process.env.SEED_ALLOW_PRODUCTION !== '1') {
+    console.error('✋ Seed canlı ortamda çalıştırılmaz (NODE_ENV=production). ' +
+      'Gerçekten istiyorsan SEED_ALLOW_PRODUCTION=1 ver.')
+    process.exit(1)
+  }
 
-  // Create demo hotel
+  console.log('🌱 Demo verisi oluşturuluyor...')
+
   const hotel = await prisma.hotel.upsert({
-    where: { slug: 'the-x-belek' },
+    where: { slug: 'demo-hotel' },
     update: {},
     create: {
-      name: 'The X Belek Hotel',
-      slug: 'the-x-belek',
-      phone: '+902427152000',
-      email: 'info@thexbelek.com',
+      name: 'Demo Hotel',
+      slug: 'demo-hotel',
       address: 'Belek, Antalya, Türkiye',
+      latitude: 36.8706211,
+      longitude: 31.014864,
       timezone: 'Europe/Istanbul',
       locale: 'tr',
       aiEnabled: true,
       autoTranslate: true,
-      aiSystemPrompt: `Sen The X Belek Hotel'in yapay zeka destekli misafir hizmetleri asistanısın.
+      aiSystemPrompt: `Sen Demo Hotel'in yapay zeka destekli misafir hizmetleri asistanısın.
 Misafirlerin sorularını nazik, profesyonel ve kısa yanıtlarla cevapla.
 Fiziksel talepleri (oda servisi, teknik arıza, ek ürün) ilgili departmana iletildiğini bildir.
 Misafirin diline göre yanıt ver (Türkçe, İngilizce, Almanca, Rusça vb.).`,
     },
   })
+  console.log(`✅ Otel: ${hotel.name} (${hotel.id})`)
 
-  console.log(`✅ Hotel: ${hotel.name} (${hotel.id})`)
-
-  // Create rooms
-  const rooms = []
   for (let i = 1; i <= 50; i++) {
-    const room = await prisma.room.upsert({
-      where: { hotelId_number: { hotelId: hotel.id, number: String(i).padStart(4, '0') } },
+    const number = String(i).padStart(4, '0')
+    await prisma.room.upsert({
+      where: { hotelId_number: { hotelId: hotel.id, number } },
       update: {},
       create: {
         hotelId: hotel.id,
-        number: String(i).padStart(4, '0'),
+        number,
         floor: Math.ceil(i / 10),
         type: i % 5 === 0 ? 'Suite' : i % 3 === 0 ? 'Deluxe' : 'Standard',
       },
     })
-    rooms.push(room)
   }
-  console.log(`✅ Rooms: ${rooms.length} created`)
+  console.log('✅ Odalar: 50')
 
-  // ─────────────────────────────────────────
-  // KULLANICILAR
-  // Sifreler ARTIK KODDA DEGIL, ortam degiskeninden gelir. Repo herkese acik
-  // olabilir; gomulu sifre canli bir yonetici hesabi demekti.
-  // Degisken tanimli degilse kullanici HIC olusturulmaz — bu kasitli: seed her
-  // deploy'da calisiyor, tahmin edilebilir bir sifreyle hesap acmasi kabul edilemez.
-  // ─────────────────────────────────────────
-  const adminPassword = process.env.SEED_ADMIN_PASSWORD
-  const agentPassword = process.env.SEED_AGENT_PASSWORD
-
-  if (adminPassword) {
-    const admin = await prisma.user.upsert({
-      where: { hotelId_username: { hotelId: hotel.id, username: 'admin' } },
-      update: {}, // mevcut kullaniciya DOKUNMA — sifresini sifirlamaz
-      create: {
-        hotelId: hotel.id,
-        username: 'admin',
-        email: 'admin@thexbelek.com',
-        passwordHash: await bcrypt.hash(adminPassword, 12),
-        firstName: 'Admin',
-        lastName: 'User',
-        role: 'HOTEL_ADMIN',
-        language: 'tr',
-      },
-    })
-    console.log(`✅ Admin kullanıcı hazır: ${admin.username}`)
-  } else {
-    console.warn('⚠️  SEED_ADMIN_PASSWORD tanımlı değil — admin kullanıcısı oluşturulmadı')
-  }
-
-  if (agentPassword) {
-    const agent = await prisma.user.upsert({
-      where: { hotelId_username: { hotelId: hotel.id, username: 'serife' } },
+  // Şifreler kodda değil, ortam değişkeninde. Tanımsızsa kullanıcı açılmaz.
+  const users = [
+    { username: 'admin', role: 'HOTEL_ADMIN' as const, firstName: 'Admin', lastName: 'User', env: 'SEED_ADMIN_PASSWORD' },
+    { username: 'agent', role: 'AGENT' as const, firstName: 'Demo', lastName: 'Agent', env: 'SEED_AGENT_PASSWORD' },
+  ]
+  for (const u of users) {
+    const password = process.env[u.env]
+    if (!password) {
+      console.warn(`⚠️  ${u.env} tanımlı değil — ${u.username} oluşturulmadı`)
+      continue
+    }
+    await prisma.user.upsert({
+      where: { hotelId_username: { hotelId: hotel.id, username: u.username } },
       update: {},
       create: {
         hotelId: hotel.id,
-        username: 'serife',
-        email: 'serife@thexbelek.com',
-        passwordHash: await bcrypt.hash(agentPassword, 12),
-        firstName: 'Şerife',
-        lastName: 'Yakışıklı',
-        role: 'AGENT',
+        username: u.username,
+        email: `${u.username}@demo-hotel.local`,
+        passwordHash: await bcrypt.hash(password, 12),
+        firstName: u.firstName,
+        lastName: u.lastName,
+        role: u.role,
         language: 'tr',
       },
     })
-    console.log(`✅ Agent kullanıcı hazır: ${agent.username}`)
-  } else {
-    console.warn('⚠️  SEED_AGENT_PASSWORD tanımlı değil — agent kullanıcısı oluşturulmadı')
+    console.log(`✅ Kullanıcı: ${u.username} (${u.role})`)
   }
 
-  // Create message templates
-  const templates = [
-    {
-      name: 'Welcome',
-      category: 'WELCOME' as const,
-      language: 'tr',
-      body: 'Hoş geldiniz, {{guest_name}}! 🎉\nSizi The X Belek Hotel ailesinde ağırlamaktan mutluluk duyuyoruz.\nOdanız: {{room_number}}\nHerhangi bir isteğiniz için bize WhatsApp üzerinden yazabilirsiniz.',
-      variables: ['guest_name', 'room_number'],
-    },
-    {
-      name: 'Welcome (EN)',
-      category: 'WELCOME' as const,
-      language: 'en',
-      body: 'Welcome, {{guest_name}}! 🎉\nWe are delighted to have you at The X Belek Hotel.\nYour room: {{room_number}}\nFeel free to WhatsApp us for any requests.',
-      variables: ['guest_name', 'room_number'],
-    },
-    {
-      name: 'Housekeeping Kayıt Akış',
-      category: 'HOUSEKEEPING' as const,
-      language: 'tr',
-      body: 'Sayın {{guest_name}}, odanızın temizliği {{time}} saatinde planlanmıştır. Odanızda olmanızı öneririz. Farklı bir saat tercih ederseniz lütfen belirtin.',
-      variables: ['guest_name', 'time'],
-    },
-    {
-      name: 'F&B Kayıt Akış',
-      category: 'FB' as const,
-      language: 'tr',
-      body: 'Sayın {{guest_name}}, restoran rezervasyonunuz {{date}} tarihi {{time}} saatine alınmıştır. Afiyet olsun! 🍽️',
-      variables: ['guest_name', 'date', 'time'],
-    },
-    {
-      name: 'Teknik Kayıt Akış',
-      category: 'TECHNICAL' as const,
-      language: 'tr',
-      body: 'Sayın {{guest_name}}, teknik talebiniz alınmıştır. Ekibimiz en kısa sürede odanıza gelecektir. Anlayışınız için teşekkür ederiz.',
-      variables: ['guest_name'],
-    },
-    {
-      name: 'Değerlendirme Anket',
-      category: 'SURVEY' as const,
-      language: 'tr',
-      body: 'Sayın {{guest_name}}, umarız konaklamanızdan memnun kaldınız! 🌟\nDeneyiminizi değerlendirmek için birkaç saniyenizi ayırır mısınız?\n👉 {{survey_link}}\nGeri bildiriminiz bizim için çok değerli.',
-      variables: ['guest_name', 'survey_link'],
-    },
-    {
-      name: 'Checkout',
-      category: 'CHECKOUT' as const,
-      language: 'tr',
-      body: 'Sayın {{guest_name}}, umarız konaklamanızdan memnun kaldınız. Yarın saat 12:00\'de check-out süreciniz başlayacaktır. Tekrar görüşmek dileğiyle! 👋',
-      variables: ['guest_name'],
-    },
-  ]
-
-  for (const template of templates) {
-    await prisma.messageTemplate.upsert({
-      where: { hotelId_name: { hotelId: hotel.id, name: template.name } },
-      update: {},
-      create: { hotelId: hotel.id, ...template, isApproved: true },
-    })
-  }
-
-  console.log(`✅ Templates: ${templates.length} created`)
-
-  // ─────────────────────────────────────────
-  // DEPARTMENTS (Order Taker - hazir 5 departman)
-  // ─────────────────────────────────────────
-  // Anahtar kelimeler AI eslestirme icin (virgulle ayrilmis).
-  // isCustom: false -> bunlar hazir sablon (manuel eklenen degil).
-  const departments = [
-    {
-      key: 'FRONT_DESK',
-      name: 'Ön Büro',
-      keywords: 'resepsiyon, check-in, check-out, fatura, anahtar, kart, oda kartı, rezervasyon, geç çıkış, erken giriş, kasa, döviz, para bozdurma, bilgi, tur, gezi, transfer, taksi, ulaşım, bilet, araç kiralama, şikayet, fatura sorunu, uyandırma',
-    },
-    {
-      key: 'HOUSEKEEPING',
-      name: 'Kat Hizmetleri',
-      keywords: 'temizlik, oda temizliği, havlu, çarşaf, nevresim, yastık, battaniye, sabun, şampuan, duş jeli, tuvalet kağıdı, çamaşır, ütü, minibar dolumu, minibar, terlik, bornoz, ekstra yatak, yatak',
-    },
-    {
-      key: 'TECHNICAL',
-      name: 'Teknik Servis',
-      keywords: 'arıza, bozuk, çalışmıyor, klima, ısıtma, kalorifer, elektrik, su yok, sıcak su, lamba, ampul, priz, televizyon, tv, wifi, internet, kapı, kilit, kombi, tıkalı, tıkanık, lavabo, klozet, sifon, perde, dolap, kumanda',
-    },
-    {
-      key: 'FB',
-      name: 'Yiyecek & İçecek',
-      keywords: 'yemek, içecek, room service, oda servisi, kahvaltı, öğle yemeği, akşam yemeği, restoran, bar, içki, su, sipariş, menü, açım, acıktım, kahve, çay, tatlı, meyve, sandviç, pizza, hamburger',
-    },
-    {
-      key: 'SECURITY',
-      name: 'Güvenlik',
-      keywords: 'güvenlik, kayıp, kayıp eşya, çalındı, hırsızlık, tehlike, acil, acil durum, yangın, kavga, gürültü, şüpheli, kasa açılmıyor, emniyet, yardım, tehdit',
-    },
-  ]
-
-  for (const dept of departments) {
-    await prisma.department.upsert({
-      where: { hotelId_key: { hotelId: hotel.id, key: dept.key } },
-      update: {}, // mevcut departmana dokunma (kullanici degistirmis olabilir)
-      create: {
-        hotelId: hotel.id,
-        key: dept.key,
-        name: dept.name,
-        keywords: dept.keywords,
-        isActive: true,
-        isCustom: false,
-      },
-    })
-  }
-
-  console.log(`✅ Departments: ${departments.length} created`)
-  console.log('\n🎉 Seed complete!')
-  console.log(`  Hotel ID: ${hotel.id}`)
-  // Sifreler loga YAZILMAZ: Railway deploy loglari uzun sure saklanir.
+  const result = await provisionHotelDefaults(prisma, hotel)
+  console.log(`✅ Departmanlar: ${result.departments}, şablonlar: ${result.templates}`)
+  console.log('\n🎉 Demo hazır.')
 }
 
 main()
