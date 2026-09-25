@@ -37,6 +37,12 @@ model Hotel {
   // Onceden ai.service'e gomuluydu (The X Belek); otel basina tasindi.
   latitude          Float?
   longitude         Float?
+  // Sesli asistan (ElevenLabs) — her otelin kendi ajani vardir.
+  // Onceden tek global ELEVENLABS_AGENT_ID vardi; butun cagrilar ilk otele yaziliyordu.
+  elevenLabsAgentId   String?  @unique
+  // Vardiyada kimse yoksa talep bildiriminin gidecegi yedek numara.
+  // Onceden tek global ORDER_TAKER_PHONE vardi; hangi otel olursa olsun oraya gidiyordu.
+  fallbackOrderPhone  String?
   // Düşük puanlı Google yorumları bu WhatsApp numarasına bildirilir
   guestRelationsPhone String?
   // Google yorum analizi icin otelin Google Place ID'si.
