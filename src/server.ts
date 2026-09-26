@@ -1,6 +1,9 @@
 import 'dotenv/config'
 import { buildApp } from './app'
 import { startCronJobs } from './config/cron'
+import { backfillLegacyEnv } from './config/legacy-env-backfill'
+import { encryptLegacySecrets } from './config/encrypt-legacy-secrets'
+import { assertEncryptionConfig } from './common/utils/secrets'
 import { logger } from './config/logger'
 
 const start = async () => {
@@ -12,7 +15,20 @@ const start = async () => {
     console.log('REDIS_URL exists:', !!process.env.REDIS_URL)
     console.log('JWT_SECRET exists:', !!process.env.JWT_SECRET)
 
+    // ENCRYPTION_KEY tanımlı ama hatalıysa (32 karakterden kısa) sunucu HİÇ açılmaz:
+    // yanlış anahtarla açılıp token'ları çözemeyen bir sunucudansa, Railway'in
+    // eski sağlıklı sürümde kalması iyidir.
+    const encryption = assertEncryptionConfig()
+    console.log('ENCRYPTION_KEY exists:', encryption.enabled)
+
     const app = await buildApp()
+
+    // Eski global ayarları (ELEVENLABS_AGENT_ID, ORDER_TAKER_PHONE) tek otel
+    // varsa o otele bir kez aktarır. Cron'dan ÖNCE: toplayıcı ilk turda ajanı bulsun.
+    await backfillLegacyEnv(app)
+
+    // Şifreleme devreye girmeden önce kaydedilmiş token'ları şifrele (bir kez).
+    await encryptLegacySecrets(app)
 
     const port = parseInt(process.env.PORT ?? '3000')
     const host = process.env.HOST ?? '0.0.0.0'

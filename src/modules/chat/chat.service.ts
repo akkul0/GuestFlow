@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify'
+import { fallbackPhoneFor } from '../../common/utils/on-shift'
 import { ConversationStatus, MessageDirection, MessageStatus } from '@prisma/client'
 import { createError } from '../../common/utils/errors'
 import { WhatsAppService } from '../whatsapp/whatsapp.service'
@@ -1121,8 +1122,6 @@ export class ChatService {
 
   private async notifyOrderTaker(conversation: any, guestMessage: string, roomNo?: string, mediaUrl?: string, savedOrder?: { departmentId: string | null; departmentKey: string; departmentName: string; urgency: string } | null) {
     try {
-      // Yedek numara Railway'den gelir; tanımlı değilse yedek yoktur.
-      const ORDER_TAKER_PHONE = (process.env.ORDER_TAKER_PHONE ?? '').replace('+', '')
       const { hotel, guest } = conversation
 
       const accessToken = hotel.waAccessToken ?? ''
@@ -1175,8 +1174,10 @@ export class ChatService {
       // YEDEK NUMARA — yalnızca departmanda vardiyada kimse bulunamadıysa.
       // Böylece normal işleyişte bildirim sadece görevdeki personele gider;
       // yedek numara talebin kaybolmasını önleyen son çaredir.
-      if (recipients.size === 0 && ORDER_TAKER_PHONE && ORDER_TAKER_PHONE.length >= 10) {
-        recipients.add(ORDER_TAKER_PHONE)
+      // Yedek numara otel basina (hotels.fallbackOrderPhone); tanimli degilse yedek yoktur.
+      const backupPhone = recipients.size === 0 ? await fallbackPhoneFor(this.app, hotel.id) : null
+      if (recipients.size === 0 && backupPhone) {
+        recipients.add(backupPhone)
         this.app.log.warn(
           { department: savedOrder?.departmentName },
           'Vardiyada personel yok — bildirim yedek numaraya gönderildi',

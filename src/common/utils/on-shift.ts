@@ -85,8 +85,17 @@ export function cleanPhone(raw: string | null | undefined): string | null {
 
 /**
  * Yedek numara: YALNIZCA departmanda vardiyada kimse yoksa devreye girer.
- * Railway'de ORDER_TAKER_PHONE tanimli degilse yedek de yoktur.
+ * Otel basina tutulur (hotels.fallbackOrderPhone). Onceden tek global
+ * ORDER_TAKER_PHONE vardi; cok otelde B otelinin talebi A otelinin yedek
+ * numarasina gidiyordu. Tanimli degilse yedek yoktur.
  */
-export function fallbackPhone(): string | null {
-  return cleanPhone(process.env.ORDER_TAKER_PHONE)
+export async function fallbackPhoneFor(
+  app: FastifyInstance,
+  hotelId: string,
+): Promise<string | null> {
+  const hotel = await app.prisma.hotel.findUnique({
+    where: { id: hotelId },
+    select: { fallbackOrderPhone: true },
+  })
+  return cleanPhone(hotel?.fallbackOrderPhone)
 }

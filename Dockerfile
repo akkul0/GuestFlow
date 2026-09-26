@@ -18,7 +18,9 @@ ENV PORT=8080
 # 2) FAIL-FAST: migration patlarsa '&&' zinciri durur, konteyner cikar,
 #    Railway eski saglikli surumu calistirmaya devam eder. Canli bozulmaz.
 #    Onceki halinde burada ';' vardi ve bozuk migration'la sunucu aciliyordu.
-# 3) SEED yumusak: tamamen upsert'tir, hatasi sunucuyu engellemesin ama loga dussun.
+# 3) SEED ARTIK DEPLOY'DA YOK: canliya sabit bir otel yazmak cok otelli yapida
+#    yanlis. Oteller panelden olusturulur (src/modules/hotels/hotel-defaults.ts).
+#    Yerel demo verisi icin: npm run db:seed
 # 4) SUNUCU: DATABASE_URL ile calisir (yalnizca veri yetkili hesap).
 #    Boylece uygulamanin kendisi kolon/tablo dusuremez.
-CMD ["sh", "-c", "DATABASE_URL=\"${MIGRATE_DATABASE_URL:-$DATABASE_URL}\" npx prisma migrate deploy && (node_modules/.bin/tsx prisma/seed.ts || echo '[seed] BASARISIZ - sunucu yine de baslatiliyor') && node_modules/.bin/tsx src/server.ts"]
+CMD ["sh", "-c", "DATABASE_URL=\"${MIGRATE_DATABASE_URL:-$DATABASE_URL}\" npx prisma migrate deploy && node_modules/.bin/tsx src/server.ts"]

@@ -22,6 +22,7 @@ import { aiRoutes } from './modules/ai/ai.routes'
 import { ordersRoutes } from './modules/orders/orders.routes'
 import { voiceRoutes } from './modules/voice/voice.routes'
 import { reviewsRoutes } from './modules/reviews/reviews.routes'
+import { safeSerializers } from './common/utils/log-safety'
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -34,6 +35,9 @@ export async function buildApp() {
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? 'info',
+      // Hata nesnelerinden başlık/token temizleyen serileştirici (bkz. log-safety.ts).
+      // Eskiden başarısız her Meta isteği Authorization başlığını loga yazıyordu.
+      serializers: safeSerializers,
       transport:
         process.env.NODE_ENV === 'development'
           ? { target: 'pino-pretty', options: { colorize: true } }

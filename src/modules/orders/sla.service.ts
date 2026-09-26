@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify'
 import axios from 'axios'
-import { getOnShiftUsers, cleanPhone, fallbackPhone } from '../../common/utils/on-shift'
+import { getOnShiftUsers, cleanPhone, fallbackPhoneFor } from '../../common/utils/on-shift'
 
 // ─────────────────────────────────────────────────────────────
 // SLA TAKIBI VE ESKALASYON
@@ -121,7 +121,7 @@ async function notifyEscalation(
 
   // 3) Hic kimse bulunamadiysa yedek numara
   if (recipients.size === 0) {
-    const backup = fallbackPhone()
+    const backup = await fallbackPhoneFor(app, hotel.id)
     if (backup) recipients.add(backup)
   }
   if (recipients.size === 0) return

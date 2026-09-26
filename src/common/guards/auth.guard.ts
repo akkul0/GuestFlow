@@ -10,8 +10,14 @@ export interface JwtPayload {
   exp: number
 }
 
-declare module 'fastify' {
-  interface FastifyRequest {
+// request.user tipini @fastify/jwt'nin KENDİ genişletme noktasından veriyoruz.
+// Eskiden 'fastify' modülünde FastifyRequest.user yeniden tanımlanıyordu;
+// bu, @fastify/jwt'nin tanımıyla çakışıp request.user'ı her yerde tipsiz
+// bırakıyordu (69 tip hatasının ~65'i). Tip denetimi fiilen kapalıydı —
+// hotels.routes'taki `id_2` gibi hatalar bu yüzden derlemede yakalanmadı.
+declare module '@fastify/jwt' {
+  interface FastifyJWT {
+    payload: Omit<JwtPayload, 'iat' | 'exp'>
     user: JwtPayload
   }
 }

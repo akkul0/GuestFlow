@@ -168,7 +168,7 @@ export async function whatsappRoutes(app: FastifyInstance) {
                   data: updateData,
                 })
               } catch (e) {
-                app.log.error({ e, waId }, 'Mesaj durumu güncellenemedi')
+                app.log.error({ err: e, waId }, 'Mesaj durumu güncellenemedi')
               }
             }
           }
