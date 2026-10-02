@@ -59,6 +59,20 @@ model Hotel {
   welcomeTemplateLang String? @default("tr")
   waAccessToken     String?
   waWebhookSecret   String?
+  // ── WhatsApp bağlantı durumu (Embedded Signup) ──
+  // DISCONNECTED: bağlı değil ya da bağlantı kesildi → mesaj işlenmez
+  // CONNECTED: token alındı, webhook aboneliği ve numara kaydı tamam
+  // ERROR: son bağlantı denemesi ya da Meta'dan gelen bir bildirim sorun bildirdi
+  waStatus          WaStatus  @default(DISCONNECTED)
+  waStatusMessage   String?   // son hata / uyarı, panelde gösterilir
+  waConnectedAt     DateTime?
+  waDisplayPhone    String?   // "+90 546 647 89 24" gibi, panelde gösterilir
+  waVerifiedName    String?   // Meta'nın onayladığı görünen ad
+  waNameStatus      String?   // görünen ad incelemesi: APPROVED / PENDING_REVIEW / DECLINED…
+  waQualityRating   String?   // GREEN / YELLOW / RED
+  // Numara kaydında kullanılan iki adımlı doğrulama PIN'i (şifreli saklanır).
+  // Yeniden bağlanırken aynı PIN gerekir; kaybolursa numara yeniden kaydedilemez.
+  waRegistrationPin String?
 
   // Claude AI config (per hotel override)
   aiEnabled         Boolean @default(true)
@@ -114,6 +128,12 @@ model User {
   @@unique([hotelId, email])
   @@unique([hotelId, username])
   @@map("users")
+}
+
+enum WaStatus {
+  DISCONNECTED
+  CONNECTED
+  ERROR
 }
 
 enum UserRole {

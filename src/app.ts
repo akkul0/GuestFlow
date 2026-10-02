@@ -24,6 +24,7 @@ import { voiceRoutes } from './modules/voice/voice.routes'
 import { reviewsRoutes } from './modules/reviews/reviews.routes'
 import { safeSerializers } from './common/utils/log-safety'
 import { publicRoutes } from './modules/public/public.routes'
+import { onboardingRoutes } from './modules/onboarding/onboarding.routes'
 import { passwordChangeGate } from './common/guards/auth.guard'
 
 declare module 'fastify' {
@@ -159,6 +160,8 @@ export async function buildApp() {
   await app.register(reviewsRoutes, { prefix: `${prefix}/reviews` })
   // Giriş ekranı için herkese açık uçlar (otel adı/logosu)
   await app.register(publicRoutes, { prefix: `${prefix}/public` })
+  // WhatsApp bağlantısı (Embedded Signup)
+  await app.register(onboardingRoutes, { prefix: `${prefix}/onboarding` })
   // Sesli asistan (telefon) — JWT yok, x-voice-secret ile korunur
   await app.register(voiceRoutes, { prefix: `${prefix}/voice` })
 

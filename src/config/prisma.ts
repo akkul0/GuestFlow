@@ -12,7 +12,7 @@ declare module 'fastify' {
 // ─────────────────────────────────────────────────────────────
 // ŞİFRELİ ALANLAR
 //
-// hotels.waAccessToken ve hotels.waWebhookSecret veritabanında şifreli
+// hotels.waAccessToken, waWebhookSecret ve waRegistrationPin veritabanında şifreli
 // durur. Şifreleme/çözme burada, Prisma katmanında TEK YERDE yapılır:
 //   • OKURKEN otomatik çözülür — token'ı okuyan 20'den fazla noktanın
 //     hiçbirinin değişmesi gerekmez, biri unutulup gönderim bozulamaz.
@@ -27,7 +27,7 @@ declare module 'fastify' {
 // Hata fırlatsaydık tek bir bozuk kayıt bütün otel sorgularını düşürürdü.
 // ─────────────────────────────────────────────────────────────
 
-const SECRET_FIELDS = ['waAccessToken', 'waWebhookSecret'] as const
+const SECRET_FIELDS = ['waAccessToken', 'waWebhookSecret', 'waRegistrationPin'] as const
 
 function encryptField(value: unknown): unknown {
   if (typeof value === 'string') return value.length > 0 ? encryptSecret(value) : value
@@ -83,6 +83,10 @@ export function createPrismaClient(log?: { error: (obj: object, msg: string) => 
         waWebhookSecret: {
           needs: { id: true, waWebhookSecret: true },
           compute: (h) => safeDecrypt('waWebhookSecret', h.id, h.waWebhookSecret),
+        },
+        waRegistrationPin: {
+          needs: { id: true, waRegistrationPin: true },
+          compute: (h) => safeDecrypt('waRegistrationPin', h.id, h.waRegistrationPin),
         },
       },
     },
