@@ -6,6 +6,8 @@ export interface JwtPayload {
   role: string
   /** ORDER_TAKER icin zorunlu: sefin bagli oldugu departman */
   departmentId?: string | null
+  /** true: kullanici sifresini degistirmeden baska islem yapamaz (bkz. passwordChangeGate) */
+  pwc?: boolean
   iat: number
   exp: number
 }
@@ -111,4 +113,41 @@ export async function requireGuestComms(
  */
 export function departmentScopeOf(user: JwtPayload): string | null {
   return user.role === 'ORDER_TAKER' ? (user.departmentId ?? '__NONE__') : null
+}
+
+// ─────────────────────────────────────────────────────────────
+// İLK GİRİŞTE ŞİFRE DEĞİŞTİRME KAPISI
+//
+// Yönetici bir hesap açtığında ya da şifre sıfırladığında kullanıcının
+// token'ına `pwc: true` yazılır. Bu kapı, o durumdaki bir oturumla
+// şifre değiştirme / çıkış / kimlik bilgisi dışındaki HER isteği reddeder.
+// Kontrol yalnızca panelde olsaydı, doğrudan API'ye istek atan biri
+// ortak başlangıç şifresiyle her şeyi yapmaya devam edebilirdi.
+//
+// Uygulama genelinde onRequest kancası olarak çalışır; geçersiz ya da
+// eksik token'a karışmaz (onu rotanın kendi koruması reddeder).
+// ─────────────────────────────────────────────────────────────
+const PASSWORD_CHANGE_ALLOWED = ['/auth/change-password', '/auth/logout', '/auth/me']
+
+export async function passwordChangeGate(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  const header = request.headers.authorization
+  if (!header?.startsWith('Bearer ')) return
+
+  let payload: JwtPayload
+  try {
+    payload = request.server.jwt.verify<JwtPayload>(header.slice(7))
+  } catch {
+    return
+  }
+  if (!payload.pwc) return
+
+  const route = request.routeOptions?.url ?? request.url
+  if (PASSWORD_CHANGE_ALLOWED.some((allowed) => route.endsWith(allowed))) return
+
+  return reply.status(403).send({
+    statusCode: 403,
+    error: 'Forbidden',
+    code: 'PASSWORD_CHANGE_REQUIRED',
+    message: 'Devam etmek için önce şifrenizi değiştirmelisiniz',
+  })
 }

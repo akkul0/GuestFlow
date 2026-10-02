@@ -141,3 +141,30 @@ export async function revokeSessions(app: FastifyInstance, userId: string): Prom
     data: { revokedAt: new Date() },
   })
 }
+
+/**
+ * Platform girişi e-postayla yapılır; e-posta veritabanında yalnızca otel
+ * içinde benzersiz. İki SUPER_ADMIN aynı e-postaya sahip olursa platform
+ * girişi kimin olduğunu bilemez — bu durumun oluşmasını burada engelliyoruz.
+ */
+export async function assertSuperAdminEmailUnique(
+  app: FastifyInstance,
+  email: string,
+  excludeUserId?: string,
+): Promise<void> {
+  const clash = await app.prisma.user.count({
+    where: {
+      role: 'SUPER_ADMIN',
+      email: { equals: email.trim(), mode: 'insensitive' },
+      ...(excludeUserId ? { NOT: { id: excludeUserId } } : {}),
+    },
+  })
+  if (clash > 0) {
+    throw createError(409, 'Bu e-posta başka bir platform yöneticisinde kayıtlı')
+  }
+}
+
+/** Panelin herkese açık adresi (otel giriş bağlantıları bunun üzerine kurulur). */
+export function panelBaseUrl(): string {
+  return (process.env.PANEL_PUBLIC_URL ?? 'https://admin.stayline.net').replace(/\/+$/, '')
+}

@@ -23,6 +23,8 @@ import { ordersRoutes } from './modules/orders/orders.routes'
 import { voiceRoutes } from './modules/voice/voice.routes'
 import { reviewsRoutes } from './modules/reviews/reviews.routes'
 import { safeSerializers } from './common/utils/log-safety'
+import { publicRoutes } from './modules/public/public.routes'
+import { passwordChangeGate } from './common/guards/auth.guard'
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -55,16 +57,38 @@ export async function buildApp() {
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   })
 
+  // ── İstek sınırı ─────────────────────────────
+  // Anahtar: oturum açmış istekte KULLANICI, diğerlerinde IP.
+  // Eskiden anahtar istemcinin gönderdiği `x-hotel-id` başlığıydı (her istekte
+  // farklı değer yollayan sınıra hiç takılmıyordu), yoksa IP'ydi. Panel bütün
+  // trafiği tek sunucudan ilettiği için IP anahtarı, bütün otellerin bütün
+  // personelini dakikada TOPLAM 100 istekte birleştiriyordu.
+  // Token imzası doğrulanır: uydurma token'larla yeni kova açılamaz.
   await app.register(rateLimit, {
     max: parseInt(process.env.RATE_LIMIT_MAX ?? '100'),
     timeWindow: parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? '60000'),
-    keyGenerator: (req) => req.headers['x-hotel-id']?.toString() ?? req.ip,
+    keyGenerator: (req) => {
+      const header = req.headers.authorization
+      if (header?.startsWith('Bearer ')) {
+        try {
+          const payload = app.jwt.verify<{ sub: string }>(header.slice(7))
+          if (payload?.sub) return `user:${payload.sub}`
+        } catch {
+          /* geçersiz token: IP'ye düş */
+        }
+      }
+      return `ip:${req.ip}`
+    },
   })
 
   await app.register(jwt, {
     secret: process.env.JWT_SECRET!,
     sign: { expiresIn: process.env.JWT_EXPIRES_IN ?? '15m' },
   })
+
+  // İlk girişte şifre değiştirmesi gereken oturumlar başka hiçbir uca erişemez
+  // (bkz. auth.guard.ts → passwordChangeGate). Bütün rotalardan önce eklenir.
+  app.addHook('onRequest', passwordChangeGate)
 
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } }) // 25MB
   await app.register(formbody)
@@ -133,6 +157,8 @@ export async function buildApp() {
   await app.register(ordersRoutes, { prefix: `${prefix}/orders` })
   // NOT: reviewsRoutes daha once hic KAYDEDILMEMISTI — /reviews/analyze 404 veriyordu.
   await app.register(reviewsRoutes, { prefix: `${prefix}/reviews` })
+  // Giriş ekranı için herkese açık uçlar (otel adı/logosu)
+  await app.register(publicRoutes, { prefix: `${prefix}/public` })
   // Sesli asistan (telefon) — JWT yok, x-voice-secret ile korunur
   await app.register(voiceRoutes, { prefix: `${prefix}/voice` })
 

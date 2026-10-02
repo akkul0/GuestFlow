@@ -10,7 +10,11 @@ import {
   revokeSessions,
   audit,
   Role,
+  assertSuperAdminEmailUnique,
+  panelBaseUrl,
 } from '../../common/guards/tenant'
+import { assertValidSlug } from '../../common/utils/slug'
+import { provisionHotelDefaults } from './hotel-defaults'
 import bcrypt from 'bcryptjs'
 
 // Telefonu standart hale getir: boşluk/tire/parantez temizle, Türkiye için +90 ekle.
@@ -67,6 +71,201 @@ const SETTINGS_FIELDS: Record<string, FieldRule> = {
 }
 
 export async function hotelsRoutes(app: FastifyInstance) {
+
+  // ── Platform yönetimi (yalnızca SUPER_ADMIN) ────────────────
+
+  // GET /hotels — bütün oteller, giriş bağlantıları ve bağlantı durumlarıyla
+  app.get('/', {
+    schema: { tags: ['Hotels'], summary: 'List all hotels (SUPER_ADMIN)' },
+    preHandler: requireRole('SUPER_ADMIN'),
+    handler: async (_request, reply) => {
+      const hotels = await app.prisma.hotel.findMany({
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true, name: true, slug: true, isActive: true, createdAt: true,
+          waPhoneNumberId: true,
+          _count: { select: { users: true, guests: true } },
+        },
+      })
+      const base = panelBaseUrl()
+      return reply.send({
+        items: hotels.map((h) => ({
+          id: h.id,
+          name: h.name,
+          slug: h.slug,
+          isActive: h.isActive,
+          createdAt: h.createdAt,
+          whatsappConnected: !!h.waPhoneNumberId,
+          userCount: h._count.users,
+          guestCount: h._count.guests,
+          loginUrl: `${base}/${h.slug}`,
+        })),
+      })
+    },
+  })
+
+  // POST /hotels — yeni otel + varsayılan departman/şablonlar + ilk yöneticisi
+  app.post<{
+    Body: {
+      name: string
+      slug: string
+      address?: string
+      timezone?: string
+      admin: { firstName: string; lastName: string; username: string; password: string; email?: string }
+    }
+  }>('/', {
+    schema: {
+      tags: ['Hotels'],
+      summary: 'Create a hotel with its first admin (SUPER_ADMIN)',
+      body: {
+        type: 'object',
+        required: ['name', 'slug', 'admin'],
+        properties: {
+          name: { type: 'string', minLength: 1, maxLength: 200 },
+          slug: { type: 'string', minLength: 1, maxLength: 60 },
+          address: { type: 'string', maxLength: 500 },
+          timezone: { type: 'string', maxLength: 64 },
+          admin: {
+            type: 'object',
+            required: ['firstName', 'lastName', 'username', 'password'],
+            properties: {
+              firstName: { type: 'string', minLength: 1, maxLength: 100 },
+              lastName: { type: 'string', minLength: 1, maxLength: 100 },
+              username: { type: 'string', minLength: 1, maxLength: 100 },
+              password: { type: 'string', minLength: 1, maxLength: 200 },
+              email: { type: 'string', maxLength: 200 },
+            },
+          },
+        },
+      },
+    },
+    preHandler: requireRole('SUPER_ADMIN'),
+    handler: async (request, reply) => {
+      const body = request.body
+      const slug = assertValidSlug(body.slug)
+      const name = body.name.trim()
+      const username = body.admin.username.trim()
+      if (!name) throw createError(400, 'Otel adı boş olamaz')
+      if (!username) throw createError(400, 'Yönetici kullanıcı adı boş olamaz')
+      assertPasswordStrength(body.admin.password)
+
+      const taken = await app.prisma.hotel.findUnique({ where: { slug }, select: { id: true } })
+      if (taken) throw createError(409, `"${slug}" kısa adı başka bir otelde kullanılıyor`)
+
+      const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS ?? '12')
+      const passwordHash = await bcrypt.hash(body.admin.password, saltRounds)
+
+      // Hepsi ya birlikte oluşur ya hiçbiri: yarım kalmış otel kalmaz.
+      const { hotel, admin } = await app.prisma.$transaction(async (tx) => {
+        const hotel = await tx.hotel.create({
+          data: {
+            name,
+            slug,
+            address: body.address?.trim() || null,
+            timezone: body.timezone?.trim() || 'Europe/Istanbul',
+          },
+        })
+        await provisionHotelDefaults(tx, hotel)
+        const admin = await tx.user.create({
+          data: {
+            hotelId: hotel.id,
+            username,
+            email: body.admin.email?.trim() || `${username}@${slug}.stayline.local`,
+            passwordHash,
+            firstName: body.admin.firstName.trim(),
+            lastName: body.admin.lastName.trim(),
+            role: 'HOTEL_ADMIN',
+            language: 'tr',
+            // Başlangıç şifresini sen belirliyorsun; yönetici ilk girişte kendi şifresini koyar
+            mustChangePassword: true,
+          },
+          select: { id: true, username: true },
+        })
+        return { hotel, admin }
+      })
+
+      await audit(app, request, {
+        hotelId: hotel.id,
+        action: 'HOTEL_CREATED',
+        entity: 'Hotel',
+        entityId: hotel.id,
+        newValue: { name: hotel.name, slug: hotel.slug, adminUsername: admin.username },
+      })
+
+      return reply.status(201).send({
+        hotel: { id: hotel.id, name: hotel.name, slug: hotel.slug },
+        admin,
+        loginUrl: `${panelBaseUrl()}/${hotel.slug}`,
+      })
+    },
+  })
+
+  // PATCH /hotels/:id/platform — kısa ad, ad ve aktiflik (yalnızca SUPER_ADMIN)
+  app.patch<{ Params: { id: string }; Body: { name?: string; slug?: string; isActive?: boolean } }>('/:id/platform', {
+    schema: {
+      tags: ['Hotels'],
+      summary: 'Update hotel name, slug or active state (SUPER_ADMIN)',
+      body: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', minLength: 1, maxLength: 200 },
+          slug: { type: 'string', minLength: 1, maxLength: 60 },
+          isActive: { type: 'boolean' },
+        },
+      },
+    },
+    preHandler: requireRole('SUPER_ADMIN'),
+    handler: async (request, reply) => {
+      const current = await app.prisma.hotel.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, name: true, slug: true, isActive: true },
+      })
+      if (!current) throw createError(404, 'Otel bulunamadı')
+
+      const data: { name?: string; slug?: string; isActive?: boolean } = {}
+      if (request.body.name !== undefined) {
+        const name = request.body.name.trim()
+        if (!name) throw createError(400, 'Otel adı boş olamaz')
+        data.name = name
+      }
+      if (request.body.slug !== undefined) {
+        const slug = assertValidSlug(request.body.slug)
+        if (slug !== current.slug) {
+          const taken = await app.prisma.hotel.findUnique({ where: { slug }, select: { id: true } })
+          if (taken) throw createError(409, `"${slug}" kısa adı başka bir otelde kullanılıyor`)
+          data.slug = slug
+        }
+      }
+      if (request.body.isActive !== undefined) data.isActive = request.body.isActive
+
+      const updated = await app.prisma.hotel.update({
+        where: { id: current.id },
+        data,
+        select: { id: true, name: true, slug: true, isActive: true },
+      })
+
+      // Otel kapatıldıysa personelin açık oturumları da kapanır
+      // (platform yöneticileri hariç — onlar başka otellerde çalışıyor olabilir).
+      if (data.isActive === false && current.isActive) {
+        await app.prisma.refreshToken.updateMany({
+          where: { revokedAt: null, user: { hotelId: current.id, role: { not: 'SUPER_ADMIN' } } },
+          data: { revokedAt: new Date() },
+        })
+      }
+
+      await audit(app, request, {
+        hotelId: current.id,
+        action: 'HOTEL_PLATFORM_UPDATED',
+        entity: 'Hotel',
+        entityId: current.id,
+        oldValue: { name: current.name, slug: current.slug, isActive: current.isActive },
+        newValue: { name: updated.name, slug: updated.slug, isActive: updated.isActive },
+      })
+
+      return reply.send({ ...updated, loginUrl: `${panelBaseUrl()}/${updated.slug}` })
+    },
+  })
+
 
   // GET /hotels/:id/settings — hotel config
   app.get<{ Params: { id: string } }>('/:id/settings', {
@@ -219,11 +418,15 @@ export async function hotelsRoutes(app: FastifyInstance) {
       const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS ?? '12')
       const passwordHash = await bcrypt.hash(request.body.password, saltRounds)
 
-      // Email kullanmıyoruz ama DB'de zorunlu + benzersiz. Boşsa otomatik üret.
+      // Email kullanmıyoruz ama DB'de zorunlu + otel içinde benzersiz. Boşsa otomatik üret.
       const email =
         request.body.email && request.body.email.trim()
           ? request.body.email.trim()
           : `${request.body.username}@stayline.local`
+
+      if (request.body.role === 'SUPER_ADMIN') {
+        await assertSuperAdminEmailUnique(app, email)
+      }
 
       const user = await app.prisma.user.create({
         data: {
@@ -235,6 +438,8 @@ export async function hotelsRoutes(app: FastifyInstance) {
           lastName: request.body.lastName,
           role: request.body.role,
           language: request.body.language ?? 'tr',
+          // Yöneticinin verdiği başlangıç şifresi kalıcı olmasın: ilk girişte değiştirilecek
+          mustChangePassword: true,
           ...(request.body.whatsappPhone ? { whatsappPhone: normalizePhone(request.body.whatsappPhone) } : {}),
           ...(request.body.departmentId ? { departmentId: request.body.departmentId } : {}),
         },
@@ -267,7 +472,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
 
       const target = await app.prisma.user.findFirst({
         where: { id: request.params.userId, hotelId },
-        select: { id: true, role: true, isActive: true, departmentId: true },
+        select: { id: true, role: true, isActive: true, departmentId: true, email: true },
       })
       if (!target) throw createError(404, 'User not found')
 
@@ -285,6 +490,9 @@ export async function hotelsRoutes(app: FastifyInstance) {
       }
       if (request.body.role !== undefined) {
         assertCanAssignRole(request.user, request.body.role)
+        if (request.body.role === 'SUPER_ADMIN' && target.role !== 'SUPER_ADMIN') {
+          await assertSuperAdminEmailUnique(app, target.email, target.id)
+        }
       }
 
       // Rol şefliğe çevriliyorsa departman şart: gövdede gelmiyorsa mevcut kayda bak.
@@ -368,7 +576,11 @@ export async function hotelsRoutes(app: FastifyInstance) {
 
       const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS ?? '12')
       const passwordHash = await bcrypt.hash(request.body.newPassword, saltRounds)
-      await app.prisma.user.update({ where: { id: target.id }, data: { passwordHash } })
+      await app.prisma.user.update({
+        where: { id: target.id },
+        // Sıfırlanan şifreyi yönetici biliyor: kullanıcı ilk girişte kendi şifresini koyar
+        data: { passwordHash, mustChangePassword: true, failedLoginCount: 0, lockedUntil: null },
+      })
 
       // Eski oturumlar kapatılır: şifre sızdıysa elindeki oturum da ölür.
       await revokeSessions(app, target.id)

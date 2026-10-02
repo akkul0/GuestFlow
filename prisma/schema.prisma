@@ -92,6 +92,12 @@ model User {
   language     String    @default("tr")
   isActive     Boolean   @default(true)
   lastLoginAt  DateTime?
+  // Yonetici hesabi actiginda ya da sifre sifirladiginda true olur: kullanici
+  // ilk giriste kendi sifresini belirlemeden baska hicbir sey yapamaz.
+  mustChangePassword Boolean @default(false)
+  // Kaba kuvvet korumasi: art arda hatali denemelerde hesap kisa sure kilitlenir.
+  failedLoginCount   Int     @default(0)
+  lockedUntil        DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
@@ -126,6 +132,9 @@ model RefreshToken {
   expiresAt DateTime
   createdAt DateTime @default(now())
   revokedAt DateTime?
+  // Platform yoneticisi baska bir otelin paneline gectiginde secili otel.
+  // Oturum yenilendiginde ayni otelde kalinsin diye burada tutulur.
+  activeHotelId String?
 
   @@map("refresh_tokens")
 }
