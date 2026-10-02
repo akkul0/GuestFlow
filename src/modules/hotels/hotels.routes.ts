@@ -83,7 +83,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
         orderBy: { createdAt: 'asc' },
         select: {
           id: true, name: true, slug: true, isActive: true, createdAt: true,
-          waPhoneNumberId: true,
+          waPhoneNumberId: true, logoUrl: true,
           _count: { select: { users: true, guests: true } },
         },
       })
@@ -96,6 +96,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
           isActive: h.isActive,
           createdAt: h.createdAt,
           whatsappConnected: !!h.waPhoneNumberId,
+          logoUrl: h.logoUrl,
           userCount: h._count.users,
           guestCount: h._count.guests,
           loginUrl: `${base}/${h.slug}`,
@@ -201,7 +202,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
   })
 
   // PATCH /hotels/:id/platform — kısa ad, ad ve aktiflik (yalnızca SUPER_ADMIN)
-  app.patch<{ Params: { id: string }; Body: { name?: string; slug?: string; isActive?: boolean } }>('/:id/platform', {
+  app.patch<{ Params: { id: string }; Body: { name?: string; slug?: string; isActive?: boolean; logoUrl?: string | null } }>('/:id/platform', {
     schema: {
       tags: ['Hotels'],
       summary: 'Update hotel name, slug or active state (SUPER_ADMIN)',
@@ -211,6 +212,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
           name: { type: 'string', minLength: 1, maxLength: 200 },
           slug: { type: 'string', minLength: 1, maxLength: 60 },
           isActive: { type: 'boolean' },
+          logoUrl: { type: ['string', 'null'], maxLength: 500 },
         },
       },
     },
@@ -222,7 +224,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
       })
       if (!current) throw createError(404, 'Otel bulunamadı')
 
-      const data: { name?: string; slug?: string; isActive?: boolean } = {}
+      const data: { name?: string; slug?: string; isActive?: boolean; logoUrl?: string | null } = {}
       if (request.body.name !== undefined) {
         const name = request.body.name.trim()
         if (!name) throw createError(400, 'Otel adı boş olamaz')
@@ -237,11 +239,19 @@ export async function hotelsRoutes(app: FastifyInstance) {
         }
       }
       if (request.body.isActive !== undefined) data.isActive = request.body.isActive
+      if (request.body.logoUrl !== undefined) {
+        // Logo, herkese açık giriş sayfasında gösteriliyor: yalnızca https adresi
+        const raw = (request.body.logoUrl ?? '').trim()
+        if (raw && !/^https:\/\/[^\s"'<>]+$/i.test(raw)) {
+          throw createError(400, 'Logo adresi https:// ile başlayan geçerli bir adres olmalı')
+        }
+        data.logoUrl = raw || null
+      }
 
       const updated = await app.prisma.hotel.update({
         where: { id: current.id },
         data,
-        select: { id: true, name: true, slug: true, isActive: true },
+        select: { id: true, name: true, slug: true, isActive: true, logoUrl: true },
       })
 
       // Otel kapatıldıysa personelin açık oturumları da kapanır
@@ -263,6 +273,91 @@ export async function hotelsRoutes(app: FastifyInstance) {
       })
 
       return reply.send({ ...updated, loginUrl: `${panelBaseUrl()}/${updated.slug}` })
+    },
+  })
+
+  // POST /hotels/:id/delete — oteli ve BÜTÜN verisini kalıcı olarak siler (SUPER_ADMIN)
+  //
+  // Geri alınamaz. Bu yüzden üç kilit var:
+  //  1. Otel önce kapatılmış olmalı (iki ayrı adım: yanlışlıkla silme olmaz)
+  //  2. İstekte otelin kısa adı aynen yazılmalı
+  //  3. İçinde platform yöneticisi hesabı olan otel silinemez (o hesap da silinirdi)
+  app.post<{ Params: { id: string }; Body: { confirmSlug: string } }>('/:id/delete', {
+    schema: {
+      tags: ['Hotels'],
+      summary: 'Permanently delete a hotel and all its data (SUPER_ADMIN)',
+      body: {
+        type: 'object',
+        required: ['confirmSlug'],
+        properties: { confirmSlug: { type: 'string', minLength: 1, maxLength: 60 } },
+      },
+    },
+    preHandler: requireRole('SUPER_ADMIN'),
+    handler: async (request, reply) => {
+      const hotel = await app.prisma.hotel.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, name: true, slug: true, isActive: true, waBusinessId: true, waAccessToken: true },
+      })
+      if (!hotel) throw createError(404, 'Otel bulunamadı')
+
+      if (request.body.confirmSlug.trim().toLowerCase() !== hotel.slug) {
+        throw createError(400, 'Onay için otelin kısa adını aynen yazın')
+      }
+      if (hotel.isActive) {
+        throw createError(409, 'Silmeden önce oteli kapatın')
+      }
+      if (hotel.id === request.user.hotelId) {
+        throw createError(409, 'Şu an bu oteldesiniz. Önce başka bir otele geçin')
+      }
+      const platformAdmins = await app.prisma.user.count({ where: { hotelId: hotel.id, role: 'SUPER_ADMIN' } })
+      if (platformAdmins > 0) {
+        throw createError(409, 'Bu otelde platform yöneticisi hesabı var; silinirse o hesap da silinir')
+      }
+
+      // WhatsApp aboneliğini kaldırmayı dene: silinen otelin mesajları Meta'dan
+      // gelmeye devam etmesin. Başarısız olursa silmeyi engellemez.
+      if (hotel.waBusinessId && hotel.waAccessToken) {
+        try {
+          const v = process.env.WA_API_VERSION ?? 'v21.0'
+          await fetch(`https://graph.facebook.com/${v}/${hotel.waBusinessId}/subscribed_apps`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${hotel.waAccessToken}` },
+          })
+        } catch {
+          app.log.warn({ hotelId: hotel.id }, 'Otel silinirken WhatsApp aboneliği kaldırılamadı')
+        }
+      }
+
+      const counts = {
+        users: await app.prisma.user.count({ where: { hotelId: hotel.id } }),
+        guests: await app.prisma.guest.count({ where: { hotelId: hotel.id } }),
+        conversations: await app.prisma.conversation.count({ where: { hotelId: hotel.id } }),
+        orders: await app.prisma.order.count({ where: { hotelId: hotel.id } }),
+      }
+
+      // Veritabanında otele bağlı OLMAYAN (hotelId taşıyan ama yabancı anahtarı
+      // olmayan) tablolar açıkça silinir; geri kalanı otelle birlikte silinir.
+      // Hepsi tek işlemde: ya tamamı silinir ya hiçbiri.
+      await app.prisma.$transaction(async (tx) => {
+        await tx.shiftAssignment.deleteMany({ where: { hotelId: hotel.id } })
+        await tx.shift.deleteMany({ where: { hotelId: hotel.id } })
+        await tx.message.deleteMany({ where: { hotelId: hotel.id } })
+        await tx.auditLog.deleteMany({ where: { hotelId: hotel.id } })
+        await tx.hotel.delete({ where: { id: hotel.id } })
+      })
+
+      // Silinen otelin kendi denetim kayıtları da gitti; iz, işlemi yapanın
+      // bulunduğu otele düşülür.
+      await audit(app, request, {
+        hotelId: request.user.hotelId,
+        action: 'HOTEL_DELETED',
+        entity: 'Hotel',
+        entityId: hotel.id,
+        oldValue: { name: hotel.name, slug: hotel.slug, ...counts },
+      })
+      app.log.warn({ hotelId: hotel.id, slug: hotel.slug, ...counts }, 'Otel kalıcı olarak silindi')
+
+      return reply.send({ deleted: true, ...counts })
     },
   })
 

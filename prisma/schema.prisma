@@ -76,7 +76,10 @@ model Hotel {
 
   // Claude AI config (per hotel override)
   aiEnabled         Boolean @default(true)
-  aiModel           String  @default("gpt-4o")
+  // Boşsa Railway'deki ANTHROPIC_MODEL (yoksa koddaki varsayılan) kullanılır.
+  // Eskiden varsayılan "gpt-4o" idi: yeni açılan her otelin AI'ı Anthropic'ten
+  // 404 alıp sessizce cevap vermiyordu.
+  aiModel           String?
   aiSystemPrompt    String? @db.Text
   autoTranslate     Boolean @default(true)
 

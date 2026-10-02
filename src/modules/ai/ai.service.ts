@@ -378,7 +378,13 @@ export class AiService {
     if (firstUserIdx === -1) return null
     const finalHistory = chatHistory.slice(firstUserIdx)
 
-    const model = hotel.aiModel ?? process.env.ANTHROPIC_MODEL ?? DEFAULT_MODEL
+    // Otelde Claude olmayan bir model adı kayıtlıysa (eski "gpt-4o" varsayılanı,
+    // yazım hatası) Anthropic 404 döner ve AI sessizce susar. Yok say, ortak ayara düş.
+    const configured = hotel.aiModel && /^claude-/.test(hotel.aiModel) ? hotel.aiModel : null
+    if (hotel.aiModel && !configured) {
+      this.app.log.warn({ hotelId: hotel.id, aiModel: hotel.aiModel }, 'Geçersiz AI modeli yok sayıldı — ortak model kullanılıyor')
+    }
+    const model = configured ?? process.env.ANTHROPIC_MODEL ?? DEFAULT_MODEL
     const maxTokens = parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? '500')
 
     // Premature close / gecici ag hatalarina karsi 3 kez dene
