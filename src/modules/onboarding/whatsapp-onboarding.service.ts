@@ -45,7 +45,7 @@ export class WhatsAppOnboardingService {
   async connect(hotelId: string, input: ConnectInput, actorUserId: string) {
     const hotel = await this.app.prisma.hotel.findUnique({
       where: { id: hotelId },
-      select: { id: true, waPhoneNumberId: true, waRegistrationPin: true },
+      select: { id: true, waPhoneNumberId: true, waBusinessId: true, waRegistrationPin: true },
     })
     if (!hotel) throw createError(404, 'Otel bulunamadı')
 
@@ -73,13 +73,35 @@ export class WhatsAppOnboardingService {
       // 4. Webhook aboneliği
       await subscribeApp(token, wabaId)
 
-      // 5. Numara kaydı — zaten Cloud API'de kayıtlıysa atla (yeniden bağlanma)
-      const alreadyRegistered = phone.platform_type === 'CLOUD_API'
-      const pin = hotel.waPhoneNumberId === phoneNumberId && hotel.waRegistrationPin
-        ? hotel.waRegistrationPin
-        : newPin()
-      if (!alreadyRegistered) {
-        await registerPhone(token, phoneNumberId, pin)
+      // 5. Numara kaydı
+      // Kayıt YALNIZCA gerçek bir yeniden bağlanmada atlanır: aynı otel, aynı
+      // hesap (WABA), aynı numara ve numara zaten Cloud API'de kayıtlı. Meta
+      // kaydı 72 saatte 10 ile sınırladığı için bu durumda gereksiz kayıt yapmayız.
+      // Numara başka bir hesaptan TAŞINDIYSA (WABA değişti) Meta yeni hesapta
+      // yeniden kayıt ister — numara o anda da "CLOUD_API" görünebilir, bu yüzden
+      // yalnızca platform_type'a bakmak yetmez.
+      const sameNumber = hotel.waPhoneNumberId === phoneNumberId
+      const isReconnect = sameNumber && hotel.waBusinessId === wabaId && phone.platform_type === 'CLOUD_API'
+      const pin = sameNumber && hotel.waRegistrationPin ? hotel.waRegistrationPin : newPin()
+      let registered = false
+      let registrationNote: string | null = null
+      if (!isReconnect) {
+        try {
+          await registerPhone(token, phoneNumberId, pin)
+          registered = true
+        } catch (err) {
+          const code = err instanceof MetaGraphError ? err.metaCode : undefined
+          // Numara zaten kayıtlıysa ve hata PIN uyuşmazlığı ya da deneme sınırı
+          // değilse, kayıt bu hesap için gerekmiyor olabilir: bağlantıyı kur,
+          // panelde uyarı bırak. Kayıtlı değilse hata ölümcül.
+          if (phone.platform_type === 'CLOUD_API' && code !== 133005 && code !== 133016) {
+            registrationNote =
+              'Numara Meta\'da zaten kayıtlı göründüğü için yeniden kaydedilemedi. Mesaj gönderiminde sorun olursa "Yeniden bağlan"ı deneyin.'
+            this.app.log.warn({ hotelId, phoneNumberId, metaCode: code }, 'Numara zaten kayıtlı — yeniden kayıt başarısız, bağlantı sürdürülüyor')
+          } else {
+            throw err
+          }
+        }
       }
 
       // 6. Kaydet
@@ -89,9 +111,10 @@ export class WhatsAppOnboardingService {
           waBusinessId: wabaId,
           waPhoneNumberId: phoneNumberId,
           waAccessToken: token,
-          waRegistrationPin: alreadyRegistered && hotel.waPhoneNumberId !== phoneNumberId ? null : pin,
+          // Kayıt yapıldıysa yeni PIN; yeniden bağlanmada mevcut PIN; aksi hâlde bilinmiyor
+          waRegistrationPin: registered ? pin : sameNumber ? hotel.waRegistrationPin : null,
           waStatus: 'CONNECTED',
-          waStatusMessage: null,
+          waStatusMessage: registrationNote,
           waConnectedAt: new Date(),
           waDisplayPhone: phone.display_phone_number ?? null,
           waVerifiedName: phone.verified_name ?? null,
@@ -105,9 +128,10 @@ export class WhatsAppOnboardingService {
         wabaId,
         phoneNumberId,
         displayPhone: phone.display_phone_number,
-        registered: !alreadyRegistered,
+        registered,
+        movedFromAnotherAccount: !!hotel.waBusinessId && hotel.waBusinessId !== wabaId,
       })
-      this.app.log.info({ hotelId, phoneNumberId, registered: !alreadyRegistered }, 'WhatsApp bağlandı')
+      this.app.log.info({ hotelId, phoneNumberId, registered, isReconnect }, 'WhatsApp bağlandı')
       void updated
       return this.status(hotelId)
     } catch (err) {
