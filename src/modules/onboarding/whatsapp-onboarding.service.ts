@@ -10,6 +10,9 @@ import {
   subscribeApp,
   unsubscribeApp,
   registerPhone,
+  migratePhoneNumber,
+  requestVerificationCode,
+  verifyCode,
 } from './meta-graph'
 
 // ─────────────────────────────────────────────────────────────
@@ -32,7 +35,8 @@ import {
 export interface ConnectInput {
   code: string
   wabaId: string
-  phoneNumberId: string
+  /** Yoksa yalnızca hesap bağlanır; numara sonra taşınır (bkz. startMigration). */
+  phoneNumberId?: string
 }
 
 function newPin(): string {
@@ -46,11 +50,12 @@ export class WhatsAppOnboardingService {
   async connect(hotelId: string, input: ConnectInput, actorUserId: string) {
     const hotel = await this.app.prisma.hotel.findUnique({
       where: { id: hotelId },
-      select: { id: true, waPhoneNumberId: true, waBusinessId: true, waRegistrationPin: true },
+      select: { id: true, waPhoneNumberId: true, waBusinessId: true, waRegistrationPin: true, waStatus: true },
     })
     if (!hotel) throw createError(404, 'Otel bulunamadı')
 
     const wabaId = input.wabaId.trim()
+    if (!input.phoneNumberId?.trim()) return this.connectAccountOnly(hotel, wabaId, input.code, actorUserId)
     const phoneNumberId = input.phoneNumberId.trim()
 
     try {
@@ -167,6 +172,164 @@ export class WhatsAppOnboardingService {
       }
       throw err
     }
+  }
+
+  // ── Numarasız hesap bağlantısı (taşımanın ilk adımı) ────────
+  // Bağlantı penceresi "only_waba_sharing" ile açılınca numara adımı atlanır.
+  // Hesaba erişim doğrulanır ve webhook aboneliği yapılır: Meta, taşımadan
+  // önce hedef hesapta abone bir uygulama olmasını şart koşuyor.
+  private async connectAccountOnly(
+    hotel: { id: string; waStatus: string },
+    wabaId: string,
+    code: string,
+    actorUserId: string,
+  ) {
+    // Çalışan bir bağlantıyı numarasız hesapla değiştirmek oteli susturur
+    if (hotel.waStatus === 'CONNECTED' || hotel.waStatus === 'ERROR') {
+      throw createError(409, 'Otelin çalışan bir WhatsApp bağlantısı var. Numara taşımak için önce bağlantıyı kesin.')
+    }
+    try {
+      const token = await exchangeCode(code)
+      await listPhoneNumbers(token, wabaId) // erişim kontrolü
+      await subscribeApp(token, wabaId)
+      await this.app.prisma.hotel.update({
+        where: { id: hotel.id },
+        data: {
+          waBusinessId: wabaId,
+          waAccessToken: token,
+          waPhoneNumberId: null,
+          waRegistrationPin: null,
+          waDisplayPhone: null,
+          waVerifiedName: null,
+          waNameStatus: null,
+          waQualityRating: null,
+          waStatus: 'PENDING_NUMBER',
+          waStatusMessage: 'Hesap bağlandı. Taşınacak numarayı girin.',
+        },
+      })
+      await this.writeAudit(hotel.id, actorUserId, 'WA_ACCOUNT_CONNECTED', { wabaId })
+      return this.status(hotel.id)
+    } catch (err) {
+      throw this.toHttpError(hotel.id, err, 'Hesap bağlantısı başarısız')
+    }
+  }
+
+  // ── Taşıma: numarayı iste + doğrulama kodu gönder ───────────
+  async startMigration(hotelId: string, countryCode: string, phoneNumber: string, method: 'SMS' | 'VOICE', actorUserId: string) {
+    const hotel = await this.requirePending(hotelId)
+    const cc = countryCode.replace(/\D/g, '')
+    const number = phoneNumber.replace(/\D/g, '')
+    if (!cc || cc.length > 4 || number.length < 6 || number.length > 15) {
+      throw createError(400, 'Ülke kodunu ve numarayı kontrol edin (örn. 90 ve 5321234567)')
+    }
+    try {
+      const phoneNumberId = await migratePhoneNumber(hotel.token, hotel.wabaId, cc, number)
+      const owner = await this.app.prisma.hotel.findFirst({
+        where: { waPhoneNumberId: phoneNumberId, NOT: { id: hotelId } },
+        select: { id: true },
+      })
+      if (owner) throw createError(409, 'Bu WhatsApp numarası başka bir otele bağlı.')
+
+      await requestVerificationCode(hotel.token, phoneNumberId, method)
+      await this.app.prisma.hotel.update({
+        where: { id: hotelId },
+        data: {
+          waPhoneNumberId: phoneNumberId,
+          waDisplayPhone: `+${cc} ${number}`,
+          waStatusMessage: method === 'VOICE'
+            ? 'Numara sesli aramayla aranıyor. Gelen kodu girin.'
+            : 'Numaraya SMS ile doğrulama kodu gönderildi. Kodu girin.',
+        },
+      })
+      await this.writeAudit(hotelId, actorUserId, 'WA_MIGRATION_STARTED', { phoneNumberId, method })
+      return this.status(hotelId)
+    } catch (err) {
+      throw this.toHttpError(hotelId, err, 'Numara taşıması başlatılamadı')
+    }
+  }
+
+  async resendMigrationCode(hotelId: string, method: 'SMS' | 'VOICE') {
+    const hotel = await this.requirePending(hotelId)
+    if (!hotel.phoneNumberId) throw createError(409, 'Önce taşımayı başlatın')
+    try {
+      await requestVerificationCode(hotel.token, hotel.phoneNumberId, method)
+      await this.app.prisma.hotel.update({
+        where: { id: hotelId },
+        data: { waStatusMessage: method === 'VOICE' ? 'Numara sesli aramayla aranıyor. Gelen kodu girin.' : 'Yeni kod SMS ile gönderildi.' },
+      })
+      return this.status(hotelId)
+    } catch (err) {
+      throw this.toHttpError(hotelId, err, 'Kod gönderilemedi')
+    }
+  }
+
+  // ── Taşıma: kodu doğrula + numarayı kaydet → bağlı ─────────
+  // Kayıt anında numara eski sağlayıcıdan StayLine'a geçer.
+  async completeMigration(hotelId: string, code: string, actorUserId: string) {
+    const hotel = await this.requirePending(hotelId)
+    if (!hotel.phoneNumberId) throw createError(409, 'Önce taşımayı başlatın')
+    const clean = code.replace(/\D/g, '')
+    if (clean.length !== 6) throw createError(400, 'Doğrulama kodu 6 haneli olmalı')
+    try {
+      await verifyCode(hotel.token, hotel.phoneNumberId, clean)
+      const pin = newPin()
+      await registerPhone(hotel.token, hotel.phoneNumberId, pin)
+      const phone = await getPhoneNumber(hotel.token, hotel.phoneNumberId).catch(() => null)
+      await this.app.prisma.hotel.update({
+        where: { id: hotelId },
+        data: {
+          waRegistrationPin: pin,
+          waStatus: 'CONNECTED',
+          waStatusMessage: null,
+          waConnectedAt: new Date(),
+          ...(phone?.display_phone_number ? { waDisplayPhone: phone.display_phone_number } : {}),
+          waVerifiedName: phone?.verified_name ?? null,
+          waNameStatus: phone?.name_status ?? null,
+          waQualityRating: phone?.quality_rating ?? null,
+        },
+      })
+      await this.writeAudit(hotelId, actorUserId, 'WA_MIGRATION_COMPLETED', { phoneNumberId: hotel.phoneNumberId })
+      this.app.log.info({ hotelId, phoneNumberId: hotel.phoneNumberId }, 'Numara taşıması tamamlandı')
+      return this.status(hotelId)
+    } catch (err) {
+      throw this.toHttpError(hotelId, err, 'Numara taşıması tamamlanamadı')
+    }
+  }
+
+  private async requirePending(hotelId: string) {
+    const h = await this.app.prisma.hotel.findUnique({
+      where: { id: hotelId },
+      select: { waStatus: true, waAccessToken: true, waBusinessId: true, waPhoneNumberId: true },
+    })
+    if (!h) throw createError(404, 'Otel bulunamadı')
+    if (h.waStatus !== 'PENDING_NUMBER' || !h.waAccessToken || !h.waBusinessId) {
+      throw createError(409, 'Numara taşıması için önce "Numaramı taşı" ile hesap bağlantısını yapın')
+    }
+    return { token: h.waAccessToken, wabaId: h.waBusinessId, phoneNumberId: h.waPhoneNumberId }
+  }
+
+  /** Meta hatasını panelde gösterilecek mesaja çevirir, durum mesajına yazar. */
+  private toHttpError(hotelId: string, err: unknown, logTitle: string) {
+    const userMessage =
+      err instanceof MetaGraphError
+        ? err.userMessage
+        : (err as { statusCode?: number }).statusCode
+          ? (err as Error).message
+          : 'Beklenmeyen bir hata oluştu.'
+    this.app.prisma.hotel.update({ where: { id: hotelId }, data: { waStatusMessage: userMessage } }).catch(() => {})
+    this.app.log.warn(
+      {
+        hotelId,
+        step: err instanceof MetaGraphError ? err.step : undefined,
+        metaCode: err instanceof MetaGraphError ? err.metaCode : undefined,
+        reason: err instanceof MetaGraphError ? err.metaMessage : (err as Error).message,
+      },
+      logTitle,
+    )
+    if (err instanceof MetaGraphError) {
+      return Object.assign(createError(err.httpStatus === 503 ? 503 : 400, userMessage), { code: `WA_${err.step.toUpperCase()}_FAILED` })
+    }
+    return err
   }
 
   async disconnect(hotelId: string, actorUserId: string) {

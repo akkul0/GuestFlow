@@ -137,6 +137,8 @@ enum WaStatus {
   DISCONNECTED
   CONNECTED
   ERROR
+  // Hesap bağlandı, numara başka bir sağlayıcıdan taşınıyor (henüz mesaj alamaz)
+  PENDING_NUMBER
 }
 
 enum UserRole {

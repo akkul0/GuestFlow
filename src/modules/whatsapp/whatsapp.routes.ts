@@ -203,7 +203,7 @@ export async function whatsappRoutes(app: FastifyInstance) {
 
     // Bağlantısı kesilmiş otel: Meta aboneliği kaldırılamamış olsa bile
     // mesajı işlemeyiz (cevap da gönderemeyiz, token silindi).
-    if (targetHotel.waStatus === 'DISCONNECTED') {
+    if (targetHotel.waStatus === 'DISCONNECTED' || targetHotel.waStatus === 'PENDING_NUMBER') {
       app.log.warn(
         { phoneNumberId, hotelId: targetHotel.id },
         'Webhook: otelin WhatsApp bağlantısı kesik — mesaj işlenmedi',

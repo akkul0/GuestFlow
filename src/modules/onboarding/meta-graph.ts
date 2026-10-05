@@ -6,7 +6,8 @@
 // otel yöneticisine gösterir, loglarda da teşhis kolay olur.
 // ─────────────────────────────────────────────────────────────
 
-const GRAPH = 'https://graph.facebook.com'
+// Testlerde sahte bir Meta sunucusuna yönlendirilebilsin diye ayarlanabilir
+const graphBase = () => (process.env.META_GRAPH_BASE_URL ?? 'https://graph.facebook.com').replace(/\/+$/, '')
 const version = () => process.env.WA_API_VERSION ?? 'v21.0'
 
 export type OnboardingStep =
@@ -16,6 +17,9 @@ export type OnboardingStep =
   | 'register_phone'
   | 'unsubscribe_app'
   | 'phone_status'
+  | 'migrate_number'
+  | 'request_code'
+  | 'verify_code'
 
 export class MetaGraphError extends Error {
   constructor(
@@ -33,6 +37,18 @@ export class MetaGraphError extends Error {
 function explain(step: OnboardingStep, code: number | undefined, message: string): string {
   if (step === 'exchange_code') {
     return 'Meta bağlantı kodu doğrulanamadı. Kodun ömrü 30 saniye; pencereyi tekrar açıp baştan deneyin.'
+  }
+  if (step === 'migrate_number') {
+    if (/two.?step/i.test(message)) {
+      return 'Numaranın iki adımlı doğrulaması açık. Mevcut WhatsApp sağlayıcınızdan bu numara için iki adımlı doğrulamayı kapatmasını isteyin, sonra tekrar deneyin.'
+    }
+    return `Meta taşımayı başlatmadı: ${message}. Numaranın mevcut sağlayıcıda kayıtlı ve onaylı olduğundan, iki adımlı doğrulamanın kapalı olduğundan emin olun.`
+  }
+  if (step === 'verify_code') {
+    return 'Doğrulama kodu kabul edilmedi. Kodu kontrol edin ya da yeni kod isteyin.'
+  }
+  if (step === 'request_code') {
+    return `Doğrulama kodu gönderilemedi: ${message}. Biraz bekleyip tekrar deneyin ya da sesli aramayı seçin.`
   }
   switch (code) {
     case 133005:
@@ -58,7 +74,7 @@ async function call<T>(
   path: string,
   init: { method?: string; token?: string; query?: Record<string, string>; body?: unknown } = {},
 ): Promise<T> {
-  const url = new URL(`${GRAPH}/${version()}/${path.replace(/^\//, '')}`)
+  const url = new URL(`${graphBase()}/${version()}/${path.replace(/^\//, '')}`)
   for (const [k, v] of Object.entries(init.query ?? {})) url.searchParams.set(k, v)
 
   const res = await fetch(url, {
@@ -150,4 +166,33 @@ export async function registerPhone(token: string, phoneNumberId: string, pin: s
     token,
     body: { messaging_product: 'whatsapp', pin },
   })
+}
+
+// ── Başka bir sağlayıcıdan numara taşıma ─────────────────────
+// Meta: taşımayı HEDEF hesabın sahibi başlatır. Numara, hedef hesapta
+// kaydedilene kadar eski sağlayıcıda çalışmaya devam eder.
+
+/** Taşımayı başlatır; numaranın yeni hesaptaki kimliğini döndürür. */
+export async function migratePhoneNumber(token: string, wabaId: string, countryCode: string, phoneNumber: string): Promise<string> {
+  const res = await call<{ id?: string }>('migrate_number', `${wabaId}/phone_numbers`, {
+    method: 'POST',
+    token,
+    body: { cc: countryCode, phone_number: phoneNumber, migrate_phone_number: true },
+  })
+  if (!res.id) throw new MetaGraphError('migrate_number', undefined, 'id dönmedi', explain('migrate_number', undefined, 'Meta numara kimliği döndürmedi'))
+  return res.id
+}
+
+/** Numaraya SMS ya da sesli aramayla doğrulama kodu gönderir. */
+export async function requestVerificationCode(token: string, phoneNumberId: string, method: 'SMS' | 'VOICE'): Promise<void> {
+  await call('request_code', `${phoneNumberId}/request_code`, {
+    method: 'POST',
+    token,
+    body: { code_method: method, language: 'tr' },
+  })
+}
+
+/** Numaraya gelen kodu doğrular (sahiplik kanıtı). */
+export async function verifyCode(token: string, phoneNumberId: string, code: string): Promise<void> {
+  await call('verify_code', `${phoneNumberId}/verify_code`, { method: 'POST', token, body: { code } })
 }
