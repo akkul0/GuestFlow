@@ -230,10 +230,14 @@ model GuestCompanion {
   guestId   String
   guest     Guest    @relation(fields: [guestId], references: [id], onDelete: Cascade)
   firstName String
-  lastName  String
+  lastName  String?
+  // Aynı odada kalan kişinin kendi WhatsApp numarası (E.164). Bu numaradan
+  // yazınca sohbet ana misafire (ve odasına) bağlanır.
+  phone     String?
   birthDate DateTime?
   createdAt DateTime @default(now())
 
+  @@index([phone])
   @@map("guest_companions")
 }
 

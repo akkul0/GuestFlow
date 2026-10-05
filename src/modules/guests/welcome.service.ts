@@ -1,3 +1,4 @@
+import { waIdFromPhone } from '../../common/utils/phone'
 import { FastifyInstance } from 'fastify'
 import axios from 'axios'
 
@@ -66,7 +67,8 @@ export async function maybeSendWelcome(
       return
     }
 
-    const to = guest.phone.replace(/[^0-9]/g, '')
+    // "0555…" biçimindeki eski kayıtlar "05551…" diye gidiyor ve Meta reddediyordu
+    const to = waIdFromPhone(guest.phone)
     if (!to) return
 
     const lang = hotel.welcomeTemplateLang ?? guest.language ?? 'tr'

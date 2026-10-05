@@ -1,3 +1,4 @@
+import { normalizePhone } from '../../common/utils/phone'
 import { Prisma } from '@prisma/client'
 import { FastifyInstance } from 'fastify'
 import { authenticate, requireGuestComms } from '../../common/guards/auth.guard'
@@ -103,8 +104,10 @@ export async function guestsRoutes(app: FastifyInstance) {
     schema: { tags: ['Guests'], summary: 'Create a guest' },
     handler: async (request, reply) => {
       const welcomeUser = request.user as { hotelId: string }
-      // Normalize phone to E.164-ish format
-      const phone = request.body.phone.replace(/[\s\-()]/g, '')
+      // Tek biçim: +905551112233 (bkz. common/utils/phone.ts). Gelen WhatsApp
+      // mesajı bu biçimle eşleşir; karşılama mesajı doğru numaraya gider.
+      const phone = normalizePhone(request.body.phone)
+      if (!phone) throw createError(400, 'Geçerli bir telefon numarası girin')
 
       // Oda NUMARASI verildiyse, o numaralı odayı bul (yoksa oluştur) ve roomId'ye çevir.
       // (Hem yeni kayıt hem reaktivasyon için ortak kullanılır.)
@@ -208,6 +211,7 @@ export async function guestsRoutes(app: FastifyInstance) {
 
       // Oda NUMARASI verildiyse roomId'ye çevir (yoksa oluştur).
       const { roomNumber: putRoomNo, birthDate: _pbd, checkInDate: _pci, checkOutDate: _pco, ...putRest } = request.body
+      if (putRest.phone) putRest.phone = normalizePhone(putRest.phone)
       let putRoomId = request.body.roomId
       if (!putRoomId && putRoomNo && putRoomNo.trim()) {
         const roomNo = putRoomNo.trim()
@@ -239,7 +243,7 @@ export async function guestsRoutes(app: FastifyInstance) {
   })
 
   // POST /guests/bulk-import — import guests from PMS export
-  app.post<{ Body: { guests: z.infer<typeof guestSchema>[] } }>('/bulk-import', {
+  app.post<{ Body: { guests: z.infer<typeof guestSchema>[]; sendWelcome?: boolean } }>('/bulk-import', {
     schema: { tags: ['Guests'], summary: 'Bulk import guests (PMS sync)' },
     handler: async (request, reply) => {
       const bulkUser = request.user as { hotelId: string }
@@ -259,7 +263,8 @@ export async function guestsRoutes(app: FastifyInstance) {
               (await app.prisma.room.create({ data: { hotelId: request.user.hotelId, number: roomNo } }))
             roomId = room.id
           }
-          const phone = guestData.phone.replace(/[\s\-()]/g, '')
+          const phone = normalizePhone(guestData.phone)
+          if (!phone) throw new Error('Geçersiz telefon numarası')
           const existing = await app.prisma.guest.findFirst({
             where: { hotelId: request.user.hotelId, phone },
           })
@@ -293,9 +298,10 @@ export async function guestsRoutes(app: FastifyInstance) {
               } as Prisma.GuestUncheckedCreateInput,
             })
             results.created++
-            // Yeni misafire otomatik karşılama (açıksa). Toplu içe aktarımda
-            // da geçerli; hata tek misafiri atlar, döngüyü kırmaz.
-            await maybeSendWelcome(app, bulkUser.hotelId, {
+            // Yeni misafire otomatik karşılama (otel ayarında açıksa). Panel,
+            // içe aktarırken bunu kapatabilir (sendWelcome: false) — örneğin
+            // geçmiş misafirleri yüklerken. Hata tek misafiri atlar, döngüyü kırmaz.
+            if (request.body.sendWelcome !== false) await maybeSendWelcome(app, bulkUser.hotelId, {
               id: created.id,
               firstName: created.firstName,
               lastName: created.lastName,
@@ -320,6 +326,77 @@ export async function guestsRoutes(app: FastifyInstance) {
   //  - Konuşmalar ve talepler/şikayetler silinmez ama guestId'leri boşalır
   //    (konuşma "eşleşmemiş" olur, talep/şikayet kaydı misafirsiz kalır)
   //  - Oda bağı misafirle birlikte tamamen kalkar
+  // ── Refakatçiler: aynı odada kalan kişiler ─────────────────
+  // Refakatçinin kendi numarası varsa, o numaradan gelen WhatsApp mesajı ana
+  // misafire (ve odasına) bağlanır: AI odayı bilir, talep doğru odaya açılır.
+
+  // POST /guests/:id/companions
+  app.post<{ Params: { id: string }; Body: { firstName: string; lastName?: string; phone?: string } }>('/:id/companions', {
+    schema: {
+      tags: ['Guests'],
+      summary: 'Add a companion (same room) to a guest',
+      body: {
+        type: 'object',
+        required: ['firstName'],
+        properties: {
+          firstName: { type: 'string', minLength: 1, maxLength: 100 },
+          lastName: { type: 'string', maxLength: 100 },
+          phone: { type: 'string', maxLength: 30 },
+        },
+      },
+    },
+    handler: async (request, reply) => {
+      const hotelId = request.user.hotelId
+      const guest = await app.prisma.guest.findFirst({ where: { id: request.params.id, hotelId }, select: { id: true, phone: true } })
+      if (!guest) throw createError(404, 'Misafir bulunamadı')
+
+      let phone: string | null = null
+      if (request.body.phone && request.body.phone.trim()) {
+        phone = normalizePhone(request.body.phone)
+        if (phone.length < 8) throw createError(400, 'Geçerli bir telefon numarası girin')
+        if (phone === guest.phone) throw createError(400, 'Bu numara misafirin kendi numarası')
+        // Aynı numara iki kişiye ait olamaz: gelen mesaj kime bağlanacağını bilemez
+        const [otherGuest, otherCompanion] = await Promise.all([
+          app.prisma.guest.findFirst({ where: { hotelId, phone, isActive: true }, select: { id: true } }),
+          app.prisma.guestCompanion.findFirst({ where: { phone, guest: { hotelId, isActive: true } }, select: { id: true } }),
+        ])
+        if (otherGuest || otherCompanion) throw createError(409, 'Bu numara başka bir misafire ya da refakatçiye kayıtlı')
+      }
+
+      const companion = await app.prisma.guestCompanion.create({
+        data: {
+          guestId: guest.id,
+          firstName: request.body.firstName.trim(),
+          lastName: request.body.lastName?.trim() || null,
+          phone,
+        },
+      })
+
+      // Refakatçi daha önce yazdıysa, eşleşmemiş sohbetini misafire bağla
+      if (phone) {
+        await app.prisma.conversation.updateMany({
+          where: { hotelId, guestId: null, waContactId: phone.replace(/^\+/, '') },
+          data: { guestId: guest.id },
+        })
+      }
+      return reply.status(201).send(companion)
+    },
+  })
+
+  // DELETE /guests/:id/companions/:companionId
+  app.delete<{ Params: { id: string; companionId: string } }>('/:id/companions/:companionId', {
+    schema: { tags: ['Guests'], summary: 'Remove a companion' },
+    handler: async (request, reply) => {
+      const companion = await app.prisma.guestCompanion.findFirst({
+        where: { id: request.params.companionId, guestId: request.params.id, guest: { hotelId: request.user.hotelId } },
+        select: { id: true },
+      })
+      if (!companion) throw createError(404, 'Refakatçi bulunamadı')
+      await app.prisma.guestCompanion.delete({ where: { id: companion.id } })
+      return reply.send({ deleted: true })
+    },
+  })
+
   app.delete<{ Params: { id: string } }>('/:id', {
     schema: { tags: ['Guests'], summary: 'Delete a guest permanently' },
     handler: async (request, reply) => {

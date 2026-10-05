@@ -1,4 +1,5 @@
 import { raiseAlertInBackground } from '../../common/utils/alerts'
+import { waIdFromPhone, phoneFromWaId } from '../../common/utils/phone'
 import { FastifyInstance } from 'fastify'
 import Anthropic from '@anthropic-ai/sdk'
 import { Conversation, Guest, Hotel, Message } from '@prisma/client'
@@ -336,7 +337,17 @@ export class AiService {
       }
     }
 
-    const systemPrompt = this.buildSystemPrompt(hotel, guest, currentTime, weather, places)
+    // Sohbet misafire bağlı ama yazan numara misafirin kendi numarası değilse,
+    // yazan aynı odadaki refakatçidir (bkz. guest_companions.phone).
+    let companionName: string | null = null
+    if (guest && conversation.waContactId && waIdFromPhone(guest.phone) !== conversation.waContactId) {
+      const companion = await this.app.prisma.guestCompanion.findFirst({
+        where: { guestId: guest.id, phone: phoneFromWaId(conversation.waContactId) },
+        select: { firstName: true, lastName: true },
+      })
+      if (companion) companionName = [companion.firstName, companion.lastName].filter(Boolean).join(' ')
+    }
+    const systemPrompt = this.buildSystemPrompt(hotel, guest, currentTime, weather, places, companionName)
 
     const allMessages = messages.slice(0, 10).reverse()
     const chatHistory: Anthropic.MessageParam[] = []
@@ -953,7 +964,7 @@ SADECE departmanın numarasını döndür (1, 2, 3...). Başka hiçbir şey yazm
     }
   }
 
-  private buildSystemPrompt(hotel: Hotel, guest: Guest | null, currentTime: string, weather: string, places = ''): string {
+  private buildSystemPrompt(hotel: Hotel, guest: Guest | null, currentTime: string, weather: string, places = '', companionName: string | null = null): string {
     const basePrompt = (hotel as any).aiSystemPrompt ??
       `You are a helpful hotel concierge assistant for ${hotel.name}, powered by GuestFlow.
 Always be polite, professional, and concise. Keep responses under 3 sentences when possible.
@@ -970,6 +981,11 @@ If the guest sends an image, analyze it and respond appropriately (e.g., if it s
       : `\n- Oda: Atanmamış (Gerekirse misafirden oda numarasını iste.)`
     const guestContext = `\n\nMisafir bilgileri:\n- Ad: ${guest.firstName} ${guest.lastName}${roomLine}\n- Check-in: ${guest.checkInDate?.toLocaleDateString('tr-TR') ?? 'Bilinmiyor'}\n- Check-out: ${guest.checkOutDate?.toLocaleDateString('tr-TR') ?? 'Bilinmiyor'}\n- Uyruk: ${guest.nationality ?? 'Bilinmiyor'}\n- Dil: ${guest.language}${(guest as any).isVip ? '\n- VIP Misafir: Öncelikli ilgi göster.' : ''}\n\nMisafirin diline göre yanıt ver (${guest.language}).`
 
-    return basePrompt + timeContext + guestContext
+    // Yazan kişi ana misafir değil, aynı odadaki refakatçisi: oda aynı, ama
+    // ona ana misafirin adıyla seslenilmemeli.
+    const companionContext = companionName
+      ? `\n\nDİKKAT: Bu sohbette yazan kişi ana misafir değil, aynı odada kalan refakatçisi: ${companionName}. Ona kendi adıyla hitap et. Oda bilgisi ve talepler aynı odaya aittir.`
+      : ''
+    return basePrompt + timeContext + guestContext + companionContext
   }
 }

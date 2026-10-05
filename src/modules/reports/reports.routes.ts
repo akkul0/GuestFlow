@@ -363,6 +363,7 @@ export async function computeMgbData(
             departmentKey: true, urgency: true, requestText: true, roomNumber: true,
             isComplaint: true, createdAt: true, deletedAt: true,
             department: { select: { name: true } },
+            guest: { select: { agencyName: true } },
           },
           orderBy: { createdAt: 'desc' },
         }),
@@ -453,7 +454,46 @@ export async function computeMgbData(
         }))
         .slice(0, 50)
 
+      // ── Acenteye göre şikâyet ──
+      // Tur operatörleri otelleri puanlıyor; yönetim hangi acentenin
+      // misafirlerinin daha çok şikâyet ettiğini görmek ister. Ham sayı
+      // yanıltıcı olur (çok misafir gönderen acente doğal olarak daha çok
+      // şikâyet üretir), bu yüzden dönemde konaklayan misafir sayısına oranlanır.
+      const NO_AGENCY = 'Acente belirtilmemiş'
+      const agencyKey = (a: string | null | undefined) => (a && a.trim() ? a.trim() : NO_AGENCY)
+      const agencyGuests = await app.prisma.guest.groupBy({
+        by: ['agencyName'],
+        where: { hotelId, isActive: true, checkInDate: { lte: end }, checkOutDate: { gte: start } },
+        _count: { _all: true },
+      })
+      const agencyMap = new Map<string, { complaints: number; guests: number }>()
+      for (const g of agencyGuests) {
+        const k = agencyKey(g.agencyName)
+        const cur = agencyMap.get(k) ?? { complaints: 0, guests: 0 }
+        cur.guests += g._count._all
+        agencyMap.set(k, cur)
+      }
+      for (const o of orders) {
+        if (!o.isComplaint || o.deletedAt) continue
+        const k = o.guest ? agencyKey(o.guest.agencyName) : 'Misafir kaydı yok'
+        const cur = agencyMap.get(k) ?? { complaints: 0, guests: 0 }
+        cur.complaints += 1
+        agencyMap.set(k, cur)
+      }
+      const agencies = [...agencyMap.entries()]
+        .map(([agency, v]) => ({
+          agency,
+          complaints: v.complaints,
+          guests: v.guests,
+          // 100 misafir başına şikâyet (misafir sayısı yoksa hesaplanmaz)
+          per100: v.guests > 0 ? Math.round((v.complaints / v.guests) * 1000) / 10 : null,
+        }))
+        .filter((a) => a.complaints > 0 || a.guests > 0)
+        .sort((a, b) => b.complaints - a.complaints || b.guests - a.guests)
+        .slice(0, 15)
+
       return {
+        agencies,
         summary: {
           occupancyPct,
           guestsReached: reachedConvs,

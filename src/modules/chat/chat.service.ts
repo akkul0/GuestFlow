@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { fallbackPhoneFor } from '../../common/utils/on-shift'
 import { Prisma, ConversationStatus, MessageDirection, MessageStatus } from '@prisma/client'
+import { normalizePhone, phoneFromWaId, waIdFromPhone } from '../../common/utils/phone'
 import { createError } from '../../common/utils/errors'
 import { WhatsAppService } from '../whatsapp/whatsapp.service'
 import { AiService } from '../ai/ai.service'
@@ -328,7 +329,8 @@ export class ChatService {
     if (!guest.phone) throw createError(400, 'Misafirin telefon numarası yok')
 
     // Telefonu normalize et (WhatsApp contact id formatı: + olmadan)
-    const waContactId = guest.phone.replace(/[\s\-()]/g, '').replace(/^\+/, '')
+    // "0555…" gibi eski kayıtlar da doğru wa_id'ye çevrilir (bkz. common/utils/phone.ts)
+    const waContactId = waIdFromPhone(guest.phone)
 
     // Bu misafir/telefon için zaten konuşma var mı?
     const existing = await this.app.prisma.conversation.findFirst({
@@ -609,16 +611,31 @@ export class ChatService {
     })
 
     if (!conversation) {
-      // Try to match guest by phone
-      const guest = await this.app.prisma.guest.findFirst({
-        where: { hotelId, phone: data.waContactId, isActive: true },
+      // Misafiri numarasından bul. Meta "905551112233" gönderir, veritabanında
+      // "+905551112233" durur (bkz. common/utils/phone.ts). Eski biçimde
+      // kalmış kayıtlar için artısız hali de denenir.
+      const e164 = phoneFromWaId(data.waContactId)
+      let guest = await this.app.prisma.guest.findFirst({
+        where: { hotelId, isActive: true, phone: { in: [e164, data.waContactId] } },
       })
+      // Misafir değilse: aynı odada kalan bir refakatçi mi?
+      let companionName: string | null = null
+      if (!guest) {
+        const companion = await this.app.prisma.guestCompanion.findFirst({
+          where: { phone: e164, guest: { hotelId, isActive: true } },
+          include: { guest: true },
+        })
+        if (companion) {
+          guest = companion.guest
+          companionName = [companion.firstName, companion.lastName].filter(Boolean).join(' ')
+        }
+      }
 
       conversation = await this.app.prisma.conversation.create({
         data: {
           hotelId,
           waContactId: data.waContactId,
-          displayName: guest ? `${guest.firstName} ${guest.lastName}` : (data.displayName ?? data.waContactId),
+          displayName: companionName ?? (guest ? `${guest.firstName} ${guest.lastName}` : (data.displayName ?? data.waContactId)),
           guestId: guest?.id ?? null,
           language: guest?.language ?? 'tr',
           lastMessageAt: new Date(),
