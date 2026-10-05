@@ -18,7 +18,7 @@ export const RESERVED_SLUGS = new Set<string>([
   'sitemap.xml', 'manifest.json', '_next', 'static', 'public',
   // Faz 3 ve sonrası için ayrılanlar
   'platform', 'hotels', 'oteller', 'settings', 'ayarlar', 'logout', 'cikis',
-  'change-password', 'sifre', 'sifre-degistir', 'select-hotel', 'otel-sec',
+  'change-password', 'sifre', 'sifre-degistir', 'select-hotel', 'otel-sec', 'profil', 'profile',
   'whatsapp', 'connect', 'baglanti', 'onboarding', 'auth', 'health', 'docs',
   // genel
   'new', 'yeni', 'www', 'app', 'stayline', 'help', 'yardim', 'support', 'destek',

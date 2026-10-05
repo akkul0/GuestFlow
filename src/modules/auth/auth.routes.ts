@@ -122,6 +122,55 @@ export async function authRoutes(app: FastifyInstance) {
     },
   })
 
+  // PATCH /auth/profile — kendi adını/soyadını değiştir
+  app.patch<{ Body: { firstName?: string; lastName?: string } }>('/profile', {
+    schema: {
+      tags: ['Auth'],
+      summary: 'Update own profile',
+      body: {
+        type: 'object',
+        properties: {
+          firstName: { type: 'string', minLength: 1, maxLength: 100 },
+          lastName: { type: 'string', minLength: 1, maxLength: 100 },
+        },
+      },
+    },
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const result = await authService.updateProfile(request.user.sub, request.body)
+      return reply.send(result)
+    },
+  })
+
+  // PATCH /auth/email — kendi e-postanı değiştir (mevcut şifreyle)
+  app.patch<{ Body: { email: string; currentPassword: string } }>('/email', {
+    config: { rateLimit: { max: 10, timeWindow: 60_000 } },
+    schema: {
+      tags: ['Auth'],
+      summary: 'Change own e-mail (requires current password)',
+      body: {
+        type: 'object',
+        required: ['email', 'currentPassword'],
+        properties: {
+          email: { type: 'string', minLength: 3, maxLength: 200 },
+          currentPassword: { type: 'string', minLength: 1, maxLength: 200 },
+        },
+      },
+    },
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const result = await authService.changeEmail(request.user.sub, request.body.email, request.body.currentPassword)
+      await audit(app, request, {
+        hotelId: request.user.hotelId,
+        action: 'USER_EMAIL_CHANGED',
+        entity: 'User',
+        entityId: request.user.sub,
+        newValue: { platformLogin: result.wasPlatformLogin },
+      })
+      return reply.send({ email: result.email })
+    },
+  })
+
   app.patch<{ Body: ChangePasswordBody }>('/change-password', {
     schema: {
       tags: ['Auth'],

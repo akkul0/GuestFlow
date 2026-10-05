@@ -216,6 +216,58 @@ export class AuthService {
     }
   }
 
+  // ── Profil ──────────────────────────────────────────────────
+  async updateProfile(userId: string, input: { firstName?: string; lastName?: string }) {
+    const data: { firstName?: string; lastName?: string } = {}
+    if (input.firstName !== undefined) {
+      const v = input.firstName.trim()
+      if (!v) throw createError(400, 'Ad boş olamaz')
+      data.firstName = v
+    }
+    if (input.lastName !== undefined) {
+      const v = input.lastName.trim()
+      if (!v) throw createError(400, 'Soyad boş olamaz')
+      data.lastName = v
+    }
+    return this.app.prisma.user.update({
+      where: { id: userId },
+      data,
+      select: { id: true, firstName: true, lastName: true, email: true },
+    })
+  }
+
+  // E-posta değişikliği mevcut şifreyle doğrulanır: açık bırakılmış bir
+  // oturumdan e-postayı değiştirip hesabı ele geçirmek mümkün olmasın.
+  // Platform yöneticisinde e-posta GİRİŞ bilgisidir; değişince eskisiyle
+  // giriş yapılamaz.
+  async changeEmail(userId: string, email: string, currentPassword: string) {
+    const user = await this.app.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, hotelId: true, role: true, email: true, passwordHash: true },
+    })
+    if (!user) throw createError(404, 'User not found')
+
+    const isValid = await bcrypt.compare(currentPassword, user.passwordHash)
+    if (!isValid) throw createError(400, 'Mevcut şifre hatalı')
+
+    const next = email.trim().toLowerCase()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(next)) throw createError(400, 'Geçerli bir e-posta adresi girin')
+    if (next === user.email.toLowerCase()) throw createError(400, 'Yeni e-posta mevcut adresle aynı')
+
+    // Otel içinde benzersiz (veritabanı kuralı); platform yöneticileri arasında da
+    const clash = await this.app.prisma.user.count({
+      where: {
+        NOT: { id: user.id },
+        email: { equals: next, mode: 'insensitive' },
+        OR: [{ hotelId: user.hotelId }, ...(user.role === 'SUPER_ADMIN' ? [{ role: 'SUPER_ADMIN' as const }] : [])],
+      },
+    })
+    if (clash > 0) throw createError(409, 'Bu e-posta başka bir hesapta kayıtlı')
+
+    await this.app.prisma.user.update({ where: { id: user.id }, data: { email: next } })
+    return { email: next, wasPlatformLogin: user.role === 'SUPER_ADMIN' }
+  }
+
   async changePassword(userId: string, { currentPassword, newPassword }: ChangePasswordBody) {
     const user = await this.app.prisma.user.findUnique({ where: { id: userId } })
     if (!user) throw createError(404, 'User not found')
