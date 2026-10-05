@@ -62,3 +62,21 @@ export async function sendDailyReportMail(opts: {
     return { ok: false, error: detail }
   }
 }
+
+/** Düz metin e-posta (alarmlar için). SMTP yapılandırılmamışsa sessizce atlanır. */
+export async function sendPlainMail(opts: { to: string; subject: string; text: string }): Promise<MailResult> {
+  if (!isMailerConfigured()) return { ok: false, error: 'SMTP yapılandırılmamış' }
+  try {
+    await buildTransport().sendMail({
+      from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
+      to: opts.to,
+      subject: opts.subject,
+      text: opts.text,
+    })
+    return { ok: true }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    logger.error({ err }, 'E-posta gönderilemedi')
+    return { ok: false, error: detail }
+  }
+}

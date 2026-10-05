@@ -1,3 +1,4 @@
+import { raiseAlertInBackground } from '../../common/utils/alerts'
 import { FastifyInstance } from 'fastify'
 import Anthropic from '@anthropic-ai/sdk'
 import { Conversation, Guest, Hotel, Message } from '@prisma/client'
@@ -411,6 +412,14 @@ export class AiService {
           continue
         }
         this.app.log.error({ err }, 'Claude generateReply failed')
+        // Misafire cevap gitmiyor: model adı, API anahtarı ya da kota sorunu olabilir
+        raiseAlertInBackground(this.app, {
+          key: `ai-reply:${hotel.id}`,
+          title: 'AI misafire cevap üretemiyor',
+          detail: 'Anthropic isteği başarısız oldu. Model adı (ANTHROPIC_MODEL), API anahtarı ve kota kontrol edilmeli.',
+          hotelId: hotel.id,
+          context: { model, status: err?.status ?? null, hata: String(err?.message ?? '').slice(0, 200) },
+        })
         return null
       }
     }

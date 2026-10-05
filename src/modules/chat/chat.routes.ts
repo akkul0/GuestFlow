@@ -214,11 +214,8 @@ export async function chatRoutes(app: FastifyInstance) {
         },
       },
       handler: async (request, reply) => {
-        const result = await chatService.matchGuest(
-          request.user.hotelId,
-          request.params.id,
-          request.body.guestId,
-        )
+        const { guestId } = request.body as { guestId: string }
+        const result = await chatService.matchGuest(request.user.hotelId, request.params.id, guestId)
         return reply.send(result)
       },
     },

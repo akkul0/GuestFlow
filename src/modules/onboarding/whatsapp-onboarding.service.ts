@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import { FastifyInstance } from 'fastify'
 import { createError } from '../../common/utils/errors'
+import { raiseAlertInBackground } from '../../common/utils/alerts'
 import {
   MetaGraphError,
   exchangeCode,
@@ -293,6 +294,20 @@ export class WhatsAppOnboardingService {
           },
         })
       }
+    }
+
+    const alarming =
+      (field === 'account_update' && ['PARTNER_REMOVED', 'DISABLED_UPDATE', 'ACCOUNT_VIOLATION', 'ACCOUNT_RESTRICTION', 'ACCOUNT_DELETED'].includes(event)) ||
+      (field === 'phone_number_quality_update' && ['FLAGGED', 'DOWNGRADE'].includes(event)) ||
+      (field === 'phone_number_name_update' && event === 'REJECTED')
+    if (alarming) {
+      raiseAlertInBackground(this.app, {
+        key: `wa-account:${hotel.id}:${field}:${event}`,
+        title: `WhatsApp hesap uyarısı: ${hotel.name}`,
+        detail: `Meta "${field}" bildirimi gönderdi (${event}). Panelde otelin WhatsApp sayfasında ayrıntı var.`,
+        hotelId: hotel.id,
+        context: { alan: field, olay: event },
+      })
     }
 
     await this.writeAudit(hotel.id, null, 'WA_ACCOUNT_EVENT', { field, event })

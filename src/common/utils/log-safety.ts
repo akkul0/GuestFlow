@@ -78,9 +78,48 @@ export function safeErrorSerializer(err: any): SerializedError {
 }
 
 /** Fastify ve bağımsız pino logger'ı için ortak serileştirici haritası. */
+// ── İstek adresindeki sırlar ─────────────────────────────────
+// Bazı dış servisler sırrı adresin içinde gönderir ve Fastify her isteğin
+// adresini loglar: sesli asistan anahtarı (?key=...) ve Meta'nın webhook
+// doğrulama jetonu (?hub.verify_token=...) Railway loglarına açıkça düşüyordu.
+const SECRET_QUERY_PARAMS = ['key', 'token', 'secret', 'hub.verify_token', 'access_token', 'code']
+
+export function redactUrl(url: string | undefined): string | undefined {
+  if (!url || !url.includes('?')) return url
+  const [path, query] = url.split('?', 2)
+  const redacted = query
+    .split('&')
+    .map((pair) => {
+      const name = decodeURIComponent(pair.split('=')[0] ?? '').toLowerCase()
+      return SECRET_QUERY_PARAMS.includes(name) ? `${pair.split('=')[0]}=[GİZLENDİ]` : pair
+    })
+    .join('&')
+  return `${path}?${redacted}`
+}
+
+interface LoggedRequest {
+  method?: string
+  url?: string
+  hostname?: string
+  ip?: string
+  socket?: { remotePort?: number }
+}
+
+/** Fastify'ın varsayılan istek serileştiricisinin aynısı, adresteki sırlar gizlenmiş. */
+function safeRequestSerializer(req: LoggedRequest) {
+  return {
+    method: req.method,
+    url: redactUrl(req.url),
+    hostname: req.hostname,
+    remoteAddress: req.ip,
+    remotePort: req.socket?.remotePort,
+  }
+}
+
 export const safeSerializers = {
   err: safeErrorSerializer,
   error: safeErrorSerializer,
   e: safeErrorSerializer,
   reason: safeErrorSerializer,
+  req: safeRequestSerializer,
 }

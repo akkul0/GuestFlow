@@ -305,6 +305,11 @@ model Message {
   // girmez; boylece ayni talepten mukerrer siparis acilmaz.
   consumedAt     DateTime?
 
+  // Sohbet ekranı (bir sohbetin mesajları, zamana göre) ve otel bazlı
+  // raporlar/temizlik için. Otel ve mesaj sayısı arttıkça tam tablo
+  // taramasını önler.
+  @@index([conversationId, createdAt])
+  @@index([hotelId, createdAt])
   @@map("messages")
 }
 
@@ -583,4 +588,33 @@ model ShiftAssignment {
 enum ShiftAssignmentStatus {
   SCHEDULED
   OFF
+}
+
+// ─────────────────────────────────────────────────────────────
+// GELEN WEBHOOK OLAYLARI
+// Meta'nın her bildirimi İŞLENMEDEN ÖNCE buraya yazılır. İşleme sırasında
+// hata olursa (veritabanı kesintisi, deploy anında yeniden başlama…) olay
+// kaybolmaz; arka planda tekrar denenir. Meta aynı bildirimi tekrar
+// gönderirse (aynı ham gövde) ikinci kez işlenmez.
+// Gövdede misafir mesajları var: işlenen olaylar 7 gün sonra silinir.
+// ─────────────────────────────────────────────────────────────
+enum WebhookEventStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+}
+
+model WebhookEvent {
+  id          String             @id @default(uuid())
+  source      String             // "meta"
+  payloadHash String             @unique // ham gövdenin sha256'sı
+  payload     Json
+  status      WebhookEventStatus @default(RECEIVED)
+  attempts    Int                @default(0)
+  lastError   String?
+  receivedAt  DateTime           @default(now())
+  processedAt DateTime?
+
+  @@index([status, receivedAt])
+  @@map("webhook_events")
 }

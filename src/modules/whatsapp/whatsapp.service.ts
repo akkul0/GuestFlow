@@ -1,3 +1,4 @@
+import { raiseAlertInBackground } from '../../common/utils/alerts'
 import { FastifyInstance } from 'fastify'
 import axios, { AxiosInstance } from 'axios'
 import { createError } from '../../common/utils/errors'
@@ -120,6 +121,16 @@ export class WhatsAppService {
         { err: axiosErr.response?.data, code: metaErr?.code, details: metaErr?.error_data?.details },
         'Meta sendMessage failed',
       )
+      // Otelin bağlantısı bozuk demek: token geçersiz (190), izin yok (10, 200),
+      // hesap kilitli (131031) ya da geçici olarak engellenmiş (368).
+      if (metaErr?.code && [190, 10, 200, 131031, 368].includes(metaErr.code)) {
+        raiseAlertInBackground(this.app, {
+          key: `wa-auth:${conversation.hotel.waPhoneNumberId}`,
+          title: 'WhatsApp gönderimi yetki hatası veriyor',
+          detail: 'Otelin WhatsApp bağlantısı bozulmuş olabilir; mesajlar misafire gitmiyor. Panelde WhatsApp sayfasından durum kontrol edilmeli, gerekirse yeniden bağlanmalı.',
+          context: { numaraKimligi: conversation.hotel.waPhoneNumberId ?? null, metaKodu: metaErr.code },
+        })
+      }
       // 131047 = 24 saat penceresi kapalı (yeniden etkileşim mesajı gerekir)
       if (metaErr?.code === 131047) {
         throw createError(

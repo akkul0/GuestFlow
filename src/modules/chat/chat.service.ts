@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify'
 import { fallbackPhoneFor } from '../../common/utils/on-shift'
-import { ConversationStatus, MessageDirection, MessageStatus } from '@prisma/client'
+import { Prisma, ConversationStatus, MessageDirection, MessageStatus } from '@prisma/client'
 import { createError } from '../../common/utils/errors'
 import { WhatsAppService } from '../whatsapp/whatsapp.service'
 import { AiService } from '../ai/ai.service'
@@ -439,7 +439,7 @@ export class ChatService {
         bodyOriginal: outOriginal,
         translatedFrom: outToLang ? 'tr' : null,
         templateName: body.templateName,
-        templateData: body.templateData,
+        templateData: body.templateData as Prisma.InputJsonValue | undefined,
         status: MessageStatus.PENDING,
         sentById: userId,
         isAiGenerated: false,

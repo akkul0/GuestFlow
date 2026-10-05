@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client'
 import { FastifyInstance } from 'fastify'
 import { authenticate, requireGuestComms } from '../../common/guards/auth.guard'
 import { createError } from '../../common/utils/errors'
@@ -244,8 +245,20 @@ export async function guestsRoutes(app: FastifyInstance) {
       const bulkUser = request.user as { hotelId: string }
       const results = { created: 0, updated: 0, skipped: 0, errors: [] as string[] }
 
-      for (const guestData of request.body.guests) {
+      for (const rawGuest of request.body.guests) {
         try {
+          // Oda NUMARASI Guest tablosunda bir kolon değil: önceden olduğu gibi
+          // doğrudan yazılınca Prisma her misafiri reddediyordu (içe aktarma hiç
+          // çalışmıyordu). Tekli eklemedeki gibi odaya çevir (yoksa oluştur).
+          const { roomNumber, roomId: givenRoomId, ...guestData } = rawGuest
+          let roomId = givenRoomId
+          if (!roomId && roomNumber && roomNumber.trim()) {
+            const roomNo = roomNumber.trim()
+            const room =
+              (await app.prisma.room.findFirst({ where: { hotelId: request.user.hotelId, number: roomNo } })) ??
+              (await app.prisma.room.create({ data: { hotelId: request.user.hotelId, number: roomNo } }))
+            roomId = room.id
+          }
           const phone = guestData.phone.replace(/[\s\-()]/g, '')
           const existing = await app.prisma.guest.findFirst({
             where: { hotelId: request.user.hotelId, phone },
@@ -257,6 +270,7 @@ export async function guestsRoutes(app: FastifyInstance) {
               data: {
                 ...guestData,
                 phone,
+                ...(roomId ? { roomId } : {}),
                 isActive: true,
                 birthDate: guestData.birthDate ? new Date(guestData.birthDate) : undefined,
                 checkInDate: guestData.checkInDate ? new Date(guestData.checkInDate) : undefined,
@@ -266,14 +280,17 @@ export async function guestsRoutes(app: FastifyInstance) {
             results.updated++
           } else {
             const created = await app.prisma.guest.create({
+              // Eksik zorunlu alan (ad/soyad) olursa Prisma bu misafiri reddeder;
+              // hata yakalanıp raporlanır, döngü devam eder.
               data: {
                 ...guestData,
                 phone,
+                ...(roomId ? { roomId } : {}),
                 hotelId: request.user.hotelId,
                 birthDate: guestData.birthDate ? new Date(guestData.birthDate) : undefined,
                 checkInDate: guestData.checkInDate ? new Date(guestData.checkInDate) : undefined,
                 checkOutDate: guestData.checkOutDate ? new Date(guestData.checkOutDate) : undefined,
-              },
+              } as Prisma.GuestUncheckedCreateInput,
             })
             results.created++
             // Yeni misafire otomatik karşılama (açıksa). Toplu içe aktarımda
@@ -288,7 +305,7 @@ export async function guestsRoutes(app: FastifyInstance) {
             })
           }
         } catch (err: unknown) {
-          results.errors.push(`${guestData.phone}: ${(err as Error).message}`)
+          results.errors.push(`${rawGuest.phone}: ${(err as Error).message}`)
           results.skipped++
         }
       }

@@ -8,6 +8,12 @@ RUN npm install
 COPY . .
 RUN npx prisma generate
 
+# TİP DENETİMİ: tip hatası varsa derleme burada durur ve deploy başlamaz;
+# Railway eski sağlıklı sürümü çalıştırmaya devam eder. Eskiden build betiği
+# hataları '|| true' ile yutuyordu (bulunan hatalardan biri Excel içe
+# aktarmanın hiç çalışmamasıydı).
+RUN npx tsc -p tsconfig.json --noEmit
+
 EXPOSE 8080
 ENV NODE_ENV=production
 ENV PORT=8080

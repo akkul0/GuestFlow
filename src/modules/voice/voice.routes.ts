@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import { FastifyInstance } from 'fastify'
 import axios from 'axios'
 import { AiService } from '../ai/ai.service'
@@ -31,6 +32,32 @@ import { getOnShiftUsers, cleanPhone, fallbackPhoneFor } from '../../common/util
 // İkinci otele ajan tanımlandığı anda bu kestirme kendiliğinden kapanır —
 // belirsiz durumda talep yanlış otele yazılmaz, işlenmez ve loglanır.
 // ─────────────────────────────────────────────────────────────
+// ── ElevenLabs imza doğrulaması ──────────────────────────────
+// Başlık biçimi: "t=<unix saniye>,v0=<hex>", hex = HMAC-SHA256(sır, "<t>.<ham gövde>")
+// Eski bir isteğin tekrar gönderilmesine karşı zaman damgası 30 dakikayla sınırlı.
+const ELEVENLABS_SIGNATURE_TOLERANCE_SEC = 30 * 60
+
+export function verifyElevenLabsSignature(rawBody: string, header: string, secret: string, nowSec = Math.floor(Date.now() / 1000)): boolean {
+  const parts = Object.fromEntries(
+    header.split(',').map((p) => {
+      const i = p.indexOf('=')
+      return [p.slice(0, i).trim(), p.slice(i + 1).trim()]
+    }),
+  )
+  const timestamp = Number(parts.t)
+  const signature = parts.v0
+  if (!Number.isFinite(timestamp) || !signature) return false
+  if (Math.abs(nowSec - timestamp) > ELEVENLABS_SIGNATURE_TOLERANCE_SEC) return false
+  const expected = crypto.createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex')
+  return safeEqual(signature, expected)
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a)
+  const bb = Buffer.from(b)
+  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb)
+}
+
 export async function resolveVoiceHotel(
   app: FastifyInstance,
   agentId: string | null | undefined,
@@ -213,9 +240,27 @@ export async function voiceRoutes(app: FastifyInstance) {
   }>('/call-ended', {
     schema: { tags: ['Voice'], summary: 'ElevenLabs post-call webhook' },
     handler: async (request, reply) => {
-      const expected = process.env.VOICE_API_SECRET
-      const provided = request.query.key ?? request.headers['x-voice-secret']
-      if (!expected || provided !== expected) {
+      // İki kabul yolu:
+      //  1. ElevenLabs imzası (önerilen): ELEVENLABS_WEBHOOK_SECRET tanımlıysa
+      //     ElevenLabs-Signature başlığı HMAC ile doğrulanır. Sır hiçbir yerde
+      //     açıkça dolaşmaz.
+      //  2. Paylaşılan anahtar (eski yol): ?key= ya da x-voice-secret başlığı.
+      //     Adresteki anahtar loglarda gizlenir (log-safety.ts → redactUrl).
+      const signatureHeader = request.headers['elevenlabs-signature']
+      const webhookSecret = process.env.ELEVENLABS_WEBHOOK_SECRET
+      let authenticated = false
+      if (webhookSecret && typeof signatureHeader === 'string') {
+        authenticated = verifyElevenLabsSignature(request.rawBody ?? '', signatureHeader, webhookSecret)
+        if (!authenticated) {
+          app.log.warn({ ip: request.ip }, 'Çağrı sonu webhook: ElevenLabs imzası geçersiz')
+          return reply.status(401).send({ ok: false })
+        }
+      } else {
+        const expected = process.env.VOICE_API_SECRET
+        const provided = request.query.key ?? request.headers['x-voice-secret']
+        authenticated = !!expected && typeof provided === 'string' && safeEqual(provided, expected)
+      }
+      if (!authenticated) {
         app.log.warn({ ip: request.ip }, 'Çağrı sonu webhook: geçersiz anahtar')
         return reply.status(401).send({ ok: false })
       }

@@ -426,11 +426,25 @@ export async function ordersRoutes(app: FastifyInstance) {
           })
         : {}
 
+      // Yeni departman bu otele ait olmalı. Oluştururken kontrol ediliyordu,
+      // güncellerken edilmiyordu: talep başka bir otelin departmanına
+      // taşınabiliyor, departman anahtarı da eski kalıyordu.
+      let newDepartmentKey: string | undefined
+      if (body.departmentId !== undefined) {
+        const dept = await app.prisma.department.findFirst({
+          where: { id: body.departmentId, hotelId: request.user.hotelId },
+          select: { key: true },
+        })
+        if (!dept) throw createError(404, 'Departman bulunamadı')
+        newDepartmentKey = dept.key
+      }
+
       const updated = await app.prisma.order.update({
         where: { id: order.id },
         data: {
           ...(body.status !== undefined && { status: body.status }),
           ...(body.departmentId !== undefined && { departmentId: body.departmentId }),
+          ...(newDepartmentKey !== undefined && { departmentKey: newDepartmentKey }),
           ...(body.urgency !== undefined && { urgency: body.urgency }),
           ...(body.note !== undefined && { note: body.note }),
           ...slaPatch,

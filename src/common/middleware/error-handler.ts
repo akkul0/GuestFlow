@@ -1,3 +1,4 @@
+import { raiseAlertInBackground } from '../utils/alerts'
 import { FastifyError, FastifyReply, FastifyRequest } from 'fastify'
 import { ZodError } from 'zod'
 
@@ -55,6 +56,14 @@ export function errorHandler(
 
   // Unexpected server errors
   request.log.error({ err: error }, 'Unhandled server error')
+  const route = `${request.method} ${request.routeOptions?.url ?? request.url.split('?')[0]}`
+  raiseAlertInBackground(request.server, {
+    key: `http-500:${route}`,
+    title: 'Beklenmeyen sunucu hatası',
+    detail: `${route} ucu 500 hatası verdi. Ayrıntı Railway loglarında "Unhandled server error" satırında.`,
+    hotelId: (request as unknown as { user?: { hotelId?: string } }).user?.hotelId,
+    context: { uc: route, hata: String(error.message ?? '').slice(0, 200) },
+  })
 
   return reply.status(500).send({
     statusCode: 500,
