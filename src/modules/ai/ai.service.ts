@@ -1,5 +1,6 @@
 import { raiseAlertInBackground } from '../../common/utils/alerts'
 import { waIdFromPhone, phoneFromWaId } from '../../common/utils/phone'
+import { knowledgeForAi } from '../knowledge/knowledge.service'
 import { FastifyInstance } from 'fastify'
 import Anthropic from '@anthropic-ai/sdk'
 import { Conversation, Guest, Hotel, Message } from '@prisma/client'
@@ -347,7 +348,8 @@ export class AiService {
       })
       if (companion) companionName = [companion.firstName, companion.lastName].filter(Boolean).join(' ')
     }
-    const systemPrompt = this.buildSystemPrompt(hotel, guest, currentTime, weather, places, companionName)
+    const knowledge = await knowledgeForAi(this.app, hotel.id).catch(() => '')
+    const systemPrompt = this.buildSystemPrompt(hotel, guest, currentTime, weather, places, companionName, knowledge)
 
     const allMessages = messages.slice(0, 10).reverse()
     const chatHistory: Anthropic.MessageParam[] = []
@@ -964,7 +966,7 @@ SADECE departmanın numarasını döndür (1, 2, 3...). Başka hiçbir şey yazm
     }
   }
 
-  private buildSystemPrompt(hotel: Hotel, guest: Guest | null, currentTime: string, weather: string, places = '', companionName: string | null = null): string {
+  private buildSystemPrompt(hotel: Hotel, guest: Guest | null, currentTime: string, weather: string, places = '', companionName: string | null = null, knowledge = ''): string {
     const basePrompt = (hotel as any).aiSystemPrompt ??
       `You are a helpful hotel concierge assistant for ${hotel.name}, powered by GuestFlow.
 Always be polite, professional, and concise. Keep responses under 3 sentences when possible.
@@ -973,7 +975,13 @@ If the guest sends an image, analyze it and respond appropriately (e.g., if it s
 
     const timeContext = `\n\nANLIK BİLGİLER:\n- Tarih/Saat: ${currentTime}${weather}${places}\n\nÖNEMLİ: Yukarıdaki saat bilgisini kullan. Yerlerin açık/kapalı durumunu bu saate göre değerlendir. Asla yanlış saat tahmini yapma.`
 
-    if (!guest) return basePrompt + timeContext
+    // Otel yönetiminin girdiği bilgiler (Otel Bilgileri sayfası). AI saat, kural
+    // ve hizmetlerde yalnızca bunlara dayanır; listede yoksa uydurmaz.
+    const kbContext = knowledge
+      ? `\n\nOTEL BİLGİLERİ (otel yönetiminin girdiği güncel bilgiler):\n${knowledge}\n\nKURAL: Saat, fiyat, kural ve hizmetler hakkında YALNIZCA yukarıdaki bilgilere dayan. Sorulan bilgi listede yoksa uydurma; bilmediğini nazikçe söyle ve resepsiyona yönlendir ya da talebi ilgili departmana ilet.`
+      : ''
+
+    if (!guest) return basePrompt + kbContext + timeContext
 
     const roomNo = (guest as any).room?.number ?? (guest as any).roomNumber ?? null
     const roomLine = roomNo
@@ -986,6 +994,6 @@ If the guest sends an image, analyze it and respond appropriately (e.g., if it s
     const companionContext = companionName
       ? `\n\nDİKKAT: Bu sohbette yazan kişi ana misafir değil, aynı odada kalan refakatçisi: ${companionName}. Ona kendi adıyla hitap et. Oda bilgisi ve talepler aynı odaya aittir.`
       : ''
-    return basePrompt + timeContext + guestContext + companionContext
+    return basePrompt + kbContext + timeContext + guestContext + companionContext
   }
 }

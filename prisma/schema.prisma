@@ -93,6 +93,8 @@ model Hotel {
   departments   Department[]
   orders        Order[]
 
+  facts     HotelFact[]
+  asset     HotelAsset?
   @@map("hotels")
 }
 
@@ -623,4 +625,39 @@ model WebhookEvent {
 
   @@index([status, receivedAt])
   @@map("webhook_events")
+}
+
+// ─────────────────────────────────────────────────────────────
+// OTEL BİLGİLERİ (AI'ın bilgi tabanı)
+// Restoran saatleri, havuz, spa, kurallar, sık sorulanlar… AI her cevapta
+// bunları görür ve listede olmayan konularda bilgi UYDURMAZ.
+// İçeriği boş kayıtlar AI'a gönderilmez (şablondan gelip doldurulmamışlar).
+// ─────────────────────────────────────────────────────────────
+model HotelFact {
+  id        String   @id @default(uuid())
+  hotelId   String
+  hotel     Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  // GENERAL | DINING | POOL_BEACH | SPA | ACTIVITIES | SERVICES | RULES | FAQ
+  category  String
+  title     String
+  content   String   @db.Text
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([hotelId, category])
+  @@map("hotel_facts")
+}
+
+// Otel logosu (yüklenen dosya). Otel kaydından AYRI: otel kaydı her gelen
+// mesajda okunuyor; logo onun içinde olsaydı her seferinde taşınırdı.
+model HotelAsset {
+  hotelId   String   @id
+  hotel     Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  logoData  Bytes
+  logoMime  String
+  updatedAt DateTime @updatedAt
+
+  @@map("hotel_assets")
 }

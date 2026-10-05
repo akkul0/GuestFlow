@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify'
 import { normalizeSlug } from '../../common/utils/slug'
+import { logoUrlFor } from '../../common/utils/logo'
 
 // ─────────────────────────────────────────────────────────────
 // HERKESE AÇIK UÇLAR (oturum gerektirmez)
@@ -17,7 +18,7 @@ export async function publicRoutes(app: FastifyInstance) {
       const hotel = slug
         ? await app.prisma.hotel.findUnique({
             where: { slug },
-            select: { name: true, slug: true, logoUrl: true, isActive: true },
+            select: { name: true, slug: true, logoUrl: true, isActive: true, asset: { select: { updatedAt: true } } },
           })
         : null
 
@@ -30,7 +31,30 @@ export async function publicRoutes(app: FastifyInstance) {
           message: 'Bu adreste bir otel bulunamadı',
         })
       }
-      return reply.send({ name: hotel.name, slug: hotel.slug, logoUrl: hotel.logoUrl })
+      return reply.send({ name: hotel.name, slug: hotel.slug, logoUrl: logoUrlFor(hotel.slug, hotel.asset?.updatedAt, hotel.logoUrl) })
+    },
+  })
+
+  // GET /public/hotels/:slug/logo — yüklenen logonun kendisi (giriş ekranı için)
+  app.get<{ Params: { slug: string } }>('/hotels/:slug/logo', {
+    config: { rateLimit: { max: 120, timeWindow: 60_000 } },
+    schema: { tags: ['Public'], summary: 'Uploaded hotel logo image' },
+    handler: async (request, reply) => {
+      const slug = normalizeSlug(request.params.slug)
+      const hotel = slug
+        ? await app.prisma.hotel.findUnique({
+            where: { slug },
+            select: { isActive: true, asset: { select: { logoData: true, logoMime: true } } },
+          })
+        : null
+      if (!hotel || !hotel.isActive || !hotel.asset) {
+        return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Logo bulunamadı' })
+      }
+      return reply
+        .header('Content-Type', hotel.asset.logoMime)
+        .header('Cache-Control', 'public, max-age=300')
+        .header('X-Content-Type-Options', 'nosniff')
+        .send(Buffer.from(hotel.asset.logoData))
     },
   })
 }

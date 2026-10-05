@@ -14,6 +14,7 @@ import {
   panelBaseUrl,
 } from '../../common/guards/tenant'
 import { assertValidSlug } from '../../common/utils/slug'
+import { detectImageMime, logoUrlFor, MAX_LOGO_BYTES } from '../../common/utils/logo'
 import { provisionHotelDefaults } from './hotel-defaults'
 import bcrypt from 'bcryptjs'
 
@@ -84,6 +85,7 @@ export async function hotelsRoutes(app: FastifyInstance) {
         select: {
           id: true, name: true, slug: true, isActive: true, createdAt: true,
           waPhoneNumberId: true, logoUrl: true,
+          asset: { select: { updatedAt: true } },
           _count: { select: { users: true, guests: true } },
         },
       })
@@ -96,7 +98,8 @@ export async function hotelsRoutes(app: FastifyInstance) {
           isActive: h.isActive,
           createdAt: h.createdAt,
           whatsappConnected: !!h.waPhoneNumberId,
-          logoUrl: h.logoUrl,
+          logoUrl: logoUrlFor(h.slug, h.asset?.updatedAt, h.logoUrl),
+          hasUploadedLogo: !!h.asset,
           userCount: h._count.users,
           guestCount: h._count.guests,
           loginUrl: `${base}/${h.slug}`,
@@ -273,6 +276,46 @@ export async function hotelsRoutes(app: FastifyInstance) {
       })
 
       return reply.send({ ...updated, loginUrl: `${panelBaseUrl()}/${updated.slug}` })
+    },
+  })
+
+  // PUT /hotels/:id/logo — logo yükle (otel yöneticisi kendi oteline, platform yöneticisi hepsine)
+  // Panel dosyayı tarayıcıda küçültüp base64 gönderir (en fazla 300 KB).
+  app.put<{ Params: { id: string }; Body: { data: string } }>('/:id/logo', {
+    schema: {
+      tags: ['Hotels'],
+      summary: 'Upload hotel logo (PNG, JPEG or WebP, max 300 KB)',
+      body: { type: 'object', required: ['data'], properties: { data: { type: 'string', minLength: 10, maxLength: 420_000 } } },
+    },
+    preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
+    handler: async (request, reply) => {
+      assertSameHotel(request.user, request.params.id)
+      const raw = request.body.data.replace(/^data:[^;]+;base64,/, '')
+      const buf = Buffer.from(raw, 'base64')
+      if (buf.length > MAX_LOGO_BYTES) throw createError(400, 'Logo en fazla 300 KB olabilir')
+      const mime = detectImageMime(buf)
+      if (!mime) throw createError(400, 'Logo PNG, JPEG ya da WebP olmalı')
+      const hotel = await app.prisma.hotel.findUnique({ where: { id: request.params.id }, select: { id: true, slug: true } })
+      if (!hotel) throw createError(404, 'Otel bulunamadı')
+      const asset = await app.prisma.hotelAsset.upsert({
+        where: { hotelId: hotel.id },
+        create: { hotelId: hotel.id, logoData: buf, logoMime: mime },
+        update: { logoData: buf, logoMime: mime },
+        select: { updatedAt: true },
+      })
+      await audit(app, request, { hotelId: hotel.id, action: 'HOTEL_LOGO_UPLOADED', entity: 'Hotel', entityId: hotel.id, newValue: { bytes: buf.length, mime } })
+      return reply.send({ logoUrl: logoUrlFor(hotel.slug, asset.updatedAt, null) })
+    },
+  })
+
+  // DELETE /hotels/:id/logo — yüklenen logoyu kaldır
+  app.delete<{ Params: { id: string } }>('/:id/logo', {
+    schema: { tags: ['Hotels'], summary: 'Remove uploaded hotel logo' },
+    preHandler: requireRole('HOTEL_ADMIN', 'SUPER_ADMIN'),
+    handler: async (request, reply) => {
+      assertSameHotel(request.user, request.params.id)
+      await app.prisma.hotelAsset.deleteMany({ where: { hotelId: request.params.id } })
+      return reply.send({ deleted: true })
     },
   })
 
