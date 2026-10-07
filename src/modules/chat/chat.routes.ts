@@ -190,6 +190,20 @@ export async function chatRoutes(app: FastifyInstance) {
   })
 
   // GET /chat/unmatched
+  // GET /chat/messages/:id/media — mesaj medyasını (foto/video/ses/belge) döndürür.
+  // Gelen medya, Meta'nın bağlantısı 5 dakikada geçersiz kaldığı için mesaj
+  // gelir gelmez veritabanına kaydedilir; panel buradan okur. (15 Temmuz'da
+  // chat.routes.ts'in başka bir sürümü yüklenirken kaybolmuştu; geri eklendi.)
+  app.get<{ Params: { id: string } }>('/messages/:id/media', {
+    schema: { tags: ['Chat'], summary: 'Proxy a message media file' },
+    handler: async (request, reply) => {
+      const media = await chatService.getMessageMedia(request.user.hotelId, request.params.id)
+      if (!media) return reply.status(404).send({ message: 'Medya bulunamadı' })
+      reply.header('Cache-Control', 'private, max-age=3600')
+      return reply.type(media.contentType).send(media.buffer)
+    },
+  })
+
   app.get('/unmatched', {
     schema: { tags: ['Chat'], summary: 'Get conversations with no matched guest' },
     handler: async (request, reply) => {
