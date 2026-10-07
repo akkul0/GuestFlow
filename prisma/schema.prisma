@@ -661,3 +661,36 @@ model HotelAsset {
 
   @@map("hotel_assets")
 }
+
+// ─────────────────────────────────────────────────────────────
+// DEMO RANDEVULARI (stayline.net → "Demo randevusu al")
+// Otele bağlı değil; platform yöneticisi panelden yönetir.
+// Aynı saate iki etkin randevu olamaz (veritabanında kısmi tekil indeks).
+// ─────────────────────────────────────────────────────────────
+enum DemoStatus {
+  CONFIRMED
+  CANCELLED
+  DONE
+  NO_SHOW
+}
+
+model DemoBooking {
+  id          String     @id @default(uuid())
+  slotStart   DateTime
+  durationMin Int        @default(30)
+  name        String
+  company     String
+  email       String
+  phone       String
+  rooms       Int?
+  message     String?    @db.Text
+  locale      String     @default("tr")
+  status      DemoStatus @default(CONFIRMED)
+  adminNote   String?    @db.Text
+  consentAt   DateTime
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([slotStart])
+  @@map("demo_bookings")
+}
