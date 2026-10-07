@@ -26,6 +26,7 @@ import { safeSerializers } from './common/utils/log-safety'
 import { publicRoutes } from './modules/public/public.routes'
 import { onboardingRoutes } from './modules/onboarding/onboarding.routes'
 import { knowledgeRoutes } from './modules/knowledge/knowledge.routes'
+import { demoRoutes } from './modules/demo/demo.routes'
 import { passwordChangeGate } from './common/guards/auth.guard'
 
 declare module 'fastify' {
@@ -165,6 +166,8 @@ export async function buildApp() {
   await app.register(onboardingRoutes, { prefix: `${prefix}/onboarding` })
   // Otel bilgileri (AI bilgi tabanı)
   await app.register(knowledgeRoutes, { prefix: `${prefix}/knowledge` })
+  // Demo randevuları (stayline.net) + platform yönetimi
+  await app.register(demoRoutes, { prefix: `${prefix}/demo` })
   // Sesli asistan (telefon) — JWT yok, x-voice-secret ile korunur
   await app.register(voiceRoutes, { prefix: `${prefix}/voice` })
 

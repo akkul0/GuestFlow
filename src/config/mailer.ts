@@ -64,7 +64,14 @@ export async function sendDailyReportMail(opts: {
 }
 
 /** Düz metin e-posta (alarmlar için). SMTP yapılandırılmamışsa sessizce atlanır. */
-export async function sendPlainMail(opts: { to: string; subject: string; text: string }): Promise<MailResult> {
+export async function sendPlainMail(opts: {
+  to: string
+  subject: string
+  text: string
+  replyTo?: string
+  // Takvim daveti (.ics): alıcının e-posta uygulaması "takvime ekle" gösterir
+  icalEvent?: { filename: string; method: 'PUBLISH' | 'REQUEST' | 'CANCEL'; content: string }
+}): Promise<MailResult> {
   if (!isMailerConfigured()) return { ok: false, error: 'SMTP yapılandırılmamış' }
   try {
     await buildTransport().sendMail({
@@ -72,6 +79,8 @@ export async function sendPlainMail(opts: { to: string; subject: string; text: s
       to: opts.to,
       subject: opts.subject,
       text: opts.text,
+      ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
+      ...(opts.icalEvent ? { icalEvent: opts.icalEvent } : {}),
     })
     return { ok: true }
   } catch (err) {
