@@ -1,7 +1,7 @@
 -- ─────────────────────────────────────────────────────────────────────────
 -- Demo otel: "StayLine Hotel" (UYDURMA bir otel)
 --
--- Sunucudaki TEK aktif oteli demo otele çevirir: adı, adresi, yapay zekâ
+-- Kısa adı (slug) verilen oteli demo otele çevirir: adı, adresi, yapay zekâ
 -- talimatı ve bilgi bankası baştan yazılır. Eski otelin logosu, Google
 -- yorum bağlantısı ve yorum özetleri silinir.
 -- DOKUNMAZ: WhatsApp bağlantısı, kullanıcılar, departmanlar, odalar,
@@ -9,19 +9,22 @@
 --
 -- Çalıştırma (sunucuda):
 --   cd ~/stayline-sunucu
---   docker compose exec -T postgres psql -U stayline -d stayline -v ON_ERROR_STOP=1 < GuestFlow/prisma/demo/stayline-hotel.sql
+--   docker compose exec -T postgres psql -U stayline -d stayline -v ON_ERROR_STOP=1 -v otel=KISA-AD < GuestFlow/prisma/demo/stayline-hotel.sql
 --   docker compose exec -T redis redis-cli FLUSHALL     # bilgi önbelleği
 -- ─────────────────────────────────────────────────────────────────────────
-BEGIN;
+\if :{?otel}
+\else
+  \echo 'Hangi otel? Komuta -v otel=KISA-AD ekleyin (ör. -v otel=the-x-belek). Hiçbir şey değişmedi.'
+  \quit
+\endif
+SELECT count(*) AS bulunan FROM hotels WHERE slug = :'otel' \gset
+\if :bulunan
+\else
+  \echo 'Bu kısa adla otel yok: ' :'otel' ' Hiçbir şey değişmedi.'
+  \quit
+\endif
 
-DO $$
-DECLARE n int;
-BEGIN
-  SELECT count(*) INTO n FROM hotels WHERE "isActive";
-  IF n <> 1 THEN
-    RAISE EXCEPTION 'Aktif otel sayısı 1 olmalı, % bulundu. Hiçbir şey değişmedi.', n;
-  END IF;
-END $$;
+BEGIN;
 
 UPDATE hotels SET
   name = 'StayLine Hotel',
@@ -35,11 +38,11 @@ Misafir fiziksel bir şey isterse (havlu, temizlik, arıza, oda servisi, ekstra 
 Rezervasyon isteklerinde (à la carte, spa, transfer) talebi aldığını ve Misafir İlişkileri'nin onaylayacağını söyle.
 Misafir bir görsel gönderirse incele ve ona göre yardımcı ol (ör. bozuk bir eşya ise arıza talebi olarak al).$q$,
   "updatedAt" = now()
-WHERE "isActive";
+WHERE slug = :'otel';
 
-DELETE FROM hotel_assets WHERE "hotelId" IN (SELECT id FROM hotels WHERE "isActive");
-DELETE FROM review_snapshots WHERE "hotelId" IN (SELECT id FROM hotels WHERE "isActive");
-DELETE FROM hotel_facts WHERE "hotelId" IN (SELECT id FROM hotels WHERE "isActive");
+DELETE FROM hotel_assets WHERE "hotelId" IN (SELECT id FROM hotels WHERE slug = :'otel');
+DELETE FROM review_snapshots WHERE "hotelId" IN (SELECT id FROM hotels WHERE slug = :'otel');
+DELETE FROM hotel_facts WHERE "hotelId" IN (SELECT id FROM hotels WHERE slug = :'otel');
 
 INSERT INTO hotel_facts (id, "hotelId", category, title, content, "sortOrder", "isActive", "createdAt", "updatedAt")
 SELECT gen_random_uuid()::text, h.id, f.category, f.title, f.content, f.sort, true, now(), now()
@@ -86,9 +89,9 @@ CROSS JOIN (VALUES
   ($q$FAQ$q$, $q$Odada saç kurutma makinesi var mı?$q$, $q$Evet, her odanın banyosunda saç kurutma makinesi, terlik ve bornoz bulunur.$q$, 38),
   ($q$FAQ$q$, $q$Eşyamı kaybettim, ne yapmalıyım?$q$, $q$Kayıp eşyalar güvenlik birimine teslim edilir. Resepsiyona ya da WhatsApp'tan eşyanın tarifini ve kaybolduğu yeri yazın.$q$, 39)
 ) AS f(category, title, content, sort)
-WHERE h."isActive";
+WHERE h.slug = :'otel';
 
 SELECT name AS otel, (SELECT count(*) FROM hotel_facts hf WHERE hf."hotelId" = h.id) AS bilgi_sayisi
-FROM hotels h WHERE "isActive";
+FROM hotels h WHERE h.slug = :'otel';
 
 COMMIT;
