@@ -22,6 +22,9 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 from lingua import Language, LanguageDetectorBuilder
 
+import torchaudio
+from silero_vad import get_speech_timestamps, load_silero_vad
+
 from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -39,6 +42,7 @@ SES_KLASORU = os.getenv("TTS_SES_KLASORU", "/sesler")
 SICAKLIK = float(os.getenv("TTS_SICAKLIK", "0.6"))   # düşük = daha düzgün, daha az "yapay" ses
 ABARTI = float(os.getenv("TTS_ABARTI", "0.4"))       # duygu/vurgu miktarı
 CFG = float(os.getenv("TTS_CFG", "0.5"))             # metne bağlılık
+TEMIZLE = os.getenv("TTS_TEMIZLE", "1") != "0"        # konuşma dışı sesleri (hırıltı, gurultu) at
 
 algilayici = LanguageDetectorBuilder.from_languages(*DILLER).build()
 
@@ -56,6 +60,38 @@ for dil in DILLER.values():
         sesler[dil] = model.conds
         log.info("Ses yüklendi: %s", yol)
 model.conds = varsayilan_ses
+
+vad = load_silero_vad()
+
+
+def temizle(wav: np.ndarray, sr: int) -> np.ndarray:
+    """Model bazen kelime/cümle aralarında konuşma olmayan sesler üretiyor
+    (hırıltı, guruldama). Konuşma algılayıcıyla (Silero VAD) yalnızca konuşma
+    kısımları tutulur; aralardaki 0,35 sn'den uzun boşluklar 0,2 sn sessizliğe
+    çevrilir, sondaki fazlalık kesilir. Konuşmanın kendisine dokunulmaz."""
+    t16 = torchaudio.functional.resample(torch.from_numpy(wav.astype(np.float32)), sr, 16000)
+    parcalar = get_speech_timestamps(t16, vad, sampling_rate=16000, threshold=0.5,
+                                     min_speech_duration_ms=120, min_silence_duration_ms=120, speech_pad_ms=40)
+    if not parcalar:
+        return wav
+    k = sr / 16000
+    sinirlar = [(int(p["start"] * k), int(p["end"] * k)) for p in parcalar]
+    cikti = []
+    for i, (b, e) in enumerate(sinirlar):
+        if i == 0:
+            b = max(0, b - int(0.04 * sr))
+        cikti.append(wav[b:e])
+        if i + 1 < len(sinirlar):
+            sonraki = sinirlar[i + 1][0]
+            if (sonraki - e) / sr > 0.35:
+                cikti.append(np.zeros(int(0.2 * sr), dtype=wav.dtype))
+            else:
+                cikti.append(wav[e:sonraki])
+        else:
+            kuyruk = wav[e:min(len(wav), e + int(0.12 * sr))]
+            cikti.append(kuyruk * np.linspace(1, 0, len(kuyruk), dtype=wav.dtype))
+    return np.concatenate(cikti)
+
 
 kilit = threading.Lock()  # tek ekran kartı: istekler sırayla
 
@@ -79,6 +115,8 @@ def uret(metin: str, dil: str) -> np.ndarray:
             cfg_weight=CFG if (ozel or dil == "en") else 0.0,
         )
     wav = wav.squeeze(0).numpy()
+    if TEMIZLE:
+        wav = temizle(wav, model.sr)
     # Cümle başı/sonunda çıt sesi olmasın: 10 ms yumuşak giriş/çıkış
     n = min(len(wav) // 2, int(model.sr * 0.01))
     if n > 0:

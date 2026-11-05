@@ -51,12 +51,13 @@ TR_IPUCU = "Otel telefon görüşmesi. Spa, hamam, sauna, havuz, aquapark, kahva
 
 
 class OtomatikDilSTT(OpenAISTTService):
-    """Misafirin dilini ilk anlamlı cümlesinden bulur ve görüşme boyunca o dilde kalır.
+    """Misafirin dilini her cümlede algılar; kısa ya da şüpheli cümlelerde görüşmenin dilinde kalır.
 
     Kısa cümlelerde Whisper dili şaşırabiliyor (Türkçe "spa saat kaçta"yı Rusça
-    sanmak gibi). Bu yüzden: dil, en az 3 kelimelik ve izinli dillerden biri olarak
-    algılanan ilk cümlede kilitlenir; kilitlenene kadar tanımsız/şüpheli sonuçlar
-    varsayılan dilde (Türkçe) yeniden çözülür.
+    sanmak gibi). Kural: algılanan dil izinli dillerden biriyse ve ya görüşmenin
+    şu anki diliyle aynıysa ya da cümle en az 3 kelimeyse kabul edilir (misafir
+    İngilizceye geçerse görüşme de geçer). Değilse cümle görüşmenin dilinde
+    (başta Türkçe) yeniden çözülür. Türkçede otel kelimeleri ipucu olarak verilir.
     """
 
     kilit: str | None = None
@@ -70,21 +71,19 @@ class OtomatikDilSTT(OpenAISTTService):
         return await self._client.audio.transcriptions.create(**kw)
 
     async def _transcribe(self, audio: bytes):
-        if self.kilit:
-            return await self._cevir(audio, self.kilit)
+        mevcut = self.kilit or VARSAYILAN_DIL
         r = await self._cevir(audio, None, response_format="verbose_json")
         ham = str(getattr(r, "language", "") or "").lower()
         dil = DIL_ADLARI.get(ham, ham[:2])
         kelime = len((r.text or "").split())
-        if dil in IZINLI_DILLER and kelime >= 3:
-            self.kilit = dil
-            logger.info(f"Görüşme dili: {dil}")
-            return r if dil != "tr" else await self._cevir(audio, "tr")
-        if dil == VARSAYILAN_DIL:
-            return await self._cevir(audio, VARSAYILAN_DIL)
-        # Kısa ya da tanımsız: otel Türkiye'de, karşılama Türkçe → Türkçe say
-        logger.info(f"Şüpheli dil ({ham}, {kelime} kelime); {VARSAYILAN_DIL} olarak yeniden çözülüyor")
-        return await self._cevir(audio, VARSAYILAN_DIL)
+        if dil in IZINLI_DILLER and (dil == mevcut or kelime >= 3):
+            if dil != self.kilit:
+                logger.info(f"Görüşme dili: {dil}")
+                self.kilit = dil
+            # Türkçede ipucuyla yeniden çöz (otel kelimeleri doğru yazılsın)
+            return await self._cevir(audio, "tr") if dil == "tr" else r
+        logger.info(f"Şüpheli dil ({ham}, {kelime} kelime); {mevcut} olarak yeniden çözülüyor")
+        return await self._cevir(audio, mevcut)
 
 
 async def otel_bilgisi() -> tuple[str, str]:
