@@ -3,6 +3,7 @@ import { FastifyInstance } from 'fastify'
 import axios from 'axios'
 import { AiService } from '../ai/ai.service'
 import { getOnShiftUsers, cleanPhone, fallbackPhoneFor } from '../../common/utils/on-shift'
+import { knowledgeForAi } from '../knowledge/knowledge.service'
 
 // ─────────────────────────────────────────────────────────────
 // SESLİ ASİSTAN (telefon) → StayLine
@@ -124,6 +125,34 @@ export async function releaseConversation(app: FastifyInstance, conversationId: 
 
 export async function voiceRoutes(app: FastifyInstance) {
   const aiService = new AiService(app)
+
+  // ─────────────────────────────────────────────────────────────
+  // GET /voice/context — YEREL SES ASİSTANI İÇİN OTEL BİLGİSİ
+  //
+  // Sunucudaki ses asistanı (ElevenLabs'in yerine geçen) her çağrının
+  // başında otelin adını ve bilgi bankasını buradan alır; ElevenLabs'te bu
+  // bilgiler ajanın kendi panelinde elle yazılıydı. Çağrı bitince döküm,
+  // ElevenLabs'le aynı biçimde /voice/call-ended'e gönderilir.
+  // Otel, ajan kimliğinden (hotels.elevenLabsAgentId) bulunur.
+  // ─────────────────────────────────────────────────────────────
+  app.get<{ Querystring: { agentId?: string } }>('/context', {
+    schema: { tags: ['Voice'], summary: 'Hotel context for the local voice assistant' },
+    handler: async (request, reply) => {
+      const expected = process.env.VOICE_API_SECRET
+      const provided = request.headers['x-voice-secret']
+      if (!expected || typeof provided !== 'string' || !safeEqual(provided, expected)) {
+        return reply.status(401).send({ ok: false, message: 'Yetkisiz.' })
+      }
+      const found = await resolveVoiceHotel(app, request.query.agentId)
+      if (!found) return reply.status(404).send({ ok: false, message: 'Otel bulunamadı.' })
+      const hotel = await app.prisma.hotel.findUnique({
+        where: { id: found.id },
+        select: { name: true, timezone: true },
+      })
+      const knowledge = await knowledgeForAi(app, found.id).catch(() => '')
+      return reply.send({ ok: true, hotelName: hotel?.name ?? '', timezone: hotel?.timezone ?? 'Europe/Istanbul', knowledge })
+    },
+  })
 
   app.post<{
     Body: {
