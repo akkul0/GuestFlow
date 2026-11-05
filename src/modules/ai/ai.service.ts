@@ -2,7 +2,8 @@ import { raiseAlertInBackground } from '../../common/utils/alerts'
 import { waIdFromPhone, phoneFromWaId } from '../../common/utils/phone'
 import { knowledgeForAi } from '../knowledge/knowledge.service'
 import { FastifyInstance } from 'fastify'
-import Anthropic from '@anthropic-ai/sdk'
+import type Anthropic from '@anthropic-ai/sdk'
+import { createLlmClient, type LlmClient } from './llm-client'
 import { Conversation, Guest, Hotel, Message } from '@prisma/client'
 
 type ConversationWithContext = Conversation & {
@@ -102,14 +103,11 @@ function detectPlaceDetailRequest(text: string): string | null {
 }
 
 export class AiService {
-  private client: Anthropic
+  // Claude ya da kendi sunucumuzdaki yerel model (AI_PROVIDER); bkz. llm-client.ts
+  private client: LlmClient
 
   constructor(private app: FastifyInstance) {
-    this.client = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
-      maxRetries: 3,
-      timeout: 30000,
-    })
+    this.client = createLlmClient(app.log)
   }
 
   private async getWeather(geo: HotelGeo | null): Promise<string> {
@@ -424,12 +422,14 @@ export class AiService {
           await new Promise(r => setTimeout(r, 500 * attempt))
           continue
         }
-        this.app.log.error({ err }, 'Claude generateReply failed')
-        // Misafire cevap gitmiyor: model adı, API anahtarı ya da kota sorunu olabilir
+        this.app.log.error({ err, provider: this.client.provider }, 'AI generateReply failed')
+        // Misafire cevap gitmiyor
         raiseAlertInBackground(this.app, {
           key: `ai-reply:${hotel.id}`,
           title: 'AI misafire cevap üretemiyor',
-          detail: 'Anthropic isteği başarısız oldu. Model adı (ANTHROPIC_MODEL), API anahtarı ve kota kontrol edilmeli.',
+          detail: this.client.provider === 'local'
+            ? `${this.client.label} cevap vermedi. Sunucuda "docker compose logs --tail 50 ollama" ile kontrol edin.`
+            : 'Anthropic isteği başarısız oldu. Model adı (ANTHROPIC_MODEL), API anahtarı ve kota kontrol edilmeli.',
           hotelId: hotel.id,
           context: { model, status: err?.status ?? null, hata: String(err?.message ?? '').slice(0, 200) },
         })
@@ -708,10 +708,14 @@ SADECE şu formatta JSON döndür (başka hiçbir şey yazma):
   // Sesli mesajı (WhatsApp voice/audio) metne çevirir (Groq Whisper).
   // Çok dillidir; Türkçe, Rusça, Arapça vb. otomatik algılar. Sesi Meta'dan
   // TOKEN ile indirip Groq'a multipart olarak yollar. Başarısızsa null döner.
+  //
+  // WHISPER_URL tanımlıysa (ör. http://whisper:8000/v1) ses kendi sunucumuzdaki
+  // Whisper'a gider; anahtar gerekmez ve ses yurt dışına çıkmaz.
   async transcribeAudio(audioUrl: string, accessToken: string): Promise<string | null> {
+    const localWhisper = (process.env.WHISPER_URL ?? '').trim().replace(/\/+$/, '')
     const groqKey = process.env.GROQ_API_KEY
-    if (!groqKey) {
-      this.app.log.warn('GROQ_API_KEY tanımlı değil; ses transkripti atlandı')
+    if (!localWhisper && !groqKey) {
+      this.app.log.warn('WHISPER_URL ya da GROQ_API_KEY tanımlı değil; ses transkripti atlandı')
       return null
     }
     try {
@@ -741,17 +745,17 @@ SADECE şu formatta JSON döndür (başka hiçbir şey yazma):
         : audioType.includes('webm') ? 'webm'
         : 'ogg'
       form.append('file', new Blob([audioBuf], { type: audioType }), `audio.${ext}`)
-      form.append('model', 'whisper-large-v3')
+      form.append('model', localWhisper ? (process.env.WHISPER_MODEL || 'Systran/faster-whisper-large-v3') : 'whisper-large-v3')
       // response_format text → düz metin döner
       form.append('response_format', 'text')
 
-      const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      const res = await fetch(`${localWhisper || 'https://api.groq.com/openai/v1'}/audio/transcriptions`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${groqKey}` },
+        headers: localWhisper ? {} : { Authorization: `Bearer ${groqKey}` },
         body: form,
       })
       if (!res.ok) {
-        this.app.log.error({ status: res.status }, 'Groq transkript başarısız')
+        this.app.log.error({ status: res.status, local: !!localWhisper }, 'Ses transkripti başarısız')
         return null
       }
       const text = (await res.text()).trim()
