@@ -25,7 +25,10 @@ from lingua import Language, LanguageDetectorBuilder
 import torchaudio
 from silero_vad import get_speech_timestamps, load_silero_vad
 
-from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+import torch.nn.functional as F
+from chatterbox.models.s3tokenizer import drop_invalid_tokens
+from chatterbox.models.t3.modules.cond_enc import T3Cond
+from chatterbox.mtl_tts import ChatterboxMultilingualTTS, punc_norm
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("tts")
@@ -101,20 +104,47 @@ def dil_bul(metin: str) -> str:
     return DILLER.get(d, VARSAYILAN_DIL)
 
 
+def azami_sure(metin: str) -> float:
+    """Metnin makul en uzun okunma süresi (sn). Model bazen metin bitince
+    uydurma konuşmaya devam ediyor; üretim bu süreyle sınırlanır (hem uydurma
+    kesilir hem de boşa üretim yapılmadığı için hızlanır)."""
+    return 0.8 + len(metin) / 9.0   # Türkçe konuşma ~13 harf/sn; %40 pay
+
+
 def uret(metin: str, dil: str) -> np.ndarray:
+    """chatterbox ChatterboxMultilingualTTS.generate ile aynı akış; tek fark
+    konuşma belirteci sayısının metin uzunluğuna göre sınırlanması."""
     with kilit:
         ozel = dil in sesler
         model.conds = sesler.get(dil, varsayilan_ses)
-        wav = model.generate(
-            metin,
-            language_id=dil,
-            exaggeration=ABARTI,
-            temperature=SICAKLIK,
-            # Varsayılan ses İngilizce konuşan biri; dile özel kayıt yoksa aksanı
-            # azaltmak için modelin önerisi cfg_weight=0
-            cfg_weight=CFG if (ozel or dil == "en") else 0.0,
-        )
+        # Varsayılan ses İngilizce konuşan biri; dile özel kayıt yoksa aksanı
+        # azaltmak için modelin önerisi cfg_weight=0
+        cfg = CFG if (ozel or dil == "en") else 0.0
+        if float(ABARTI) != float(model.conds.t3.emotion_adv[0, 0, 0].item()):
+            c = model.conds.t3
+            model.conds.t3 = T3Cond(
+                speaker_emb=c.speaker_emb,
+                cond_prompt_speech_tokens=c.cond_prompt_speech_tokens,
+                emotion_adv=ABARTI * torch.ones(1, 1, 1),
+            ).to(device=model.device)
+        en_cok = int(25 * azami_sure(metin))   # S3 belirteçleri saniyede 25 adet
+        metin_n = punc_norm(metin)
+        tt = model.tokenizer.text_to_tokens(metin_n, language_id=dil).to(model.device)
+        tt = torch.cat([tt, tt], dim=0)  # CFG için iki dizi
+        tt = F.pad(tt, (1, 0), value=model.t3.hp.start_text_token)
+        tt = F.pad(tt, (0, 1), value=model.t3.hp.stop_text_token)
+        with torch.inference_mode():
+            st = model.t3.inference(
+                t3_cond=model.conds.t3, text_tokens=tt, max_new_tokens=en_cok,
+                temperature=SICAKLIK, cfg_weight=cfg, repetition_penalty=2.0, min_p=0.05, top_p=1.0,
+            )
+            st = drop_invalid_tokens(st[0]).to(model.device)
+            wav, _ = model.s3gen.inference(speech_tokens=st, ref_dict=model.conds.gen)
+            wav = wav.squeeze(0).detach().cpu().numpy()
+            wav = model.watermarker.apply_watermark(wav, sample_rate=model.sr)
+        wav = torch.from_numpy(wav).unsqueeze(0)
     wav = wav.squeeze(0).numpy()
+    wav = wav[: int(azami_sure(metin) * model.sr)]
     if TEMIZLE:
         wav = temizle(wav, model.sr)
     # Cümle başı/sonunda çıt sesi olmasın: 10 ms yumuşak giriş/çıkış

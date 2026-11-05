@@ -31,6 +31,10 @@ from pipecat.services.ollama.llm import OLLamaLLMService
 from pipecat.services.openai.stt import OpenAISTTService
 from pipecat.services.openai.tts import OpenAITTSService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
+from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
+    SpeechTimeoutUserTurnStopStrategy,
+)
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
 API = os.getenv("SES_API_URL", "http://127.0.0.1:8080/api/v1")
@@ -41,6 +45,7 @@ LLM_MODEL = os.getenv("LOCAL_LLM_MODEL") or "gemma4:26b-a4b-it-qat"
 STT_URL = os.getenv("SES_STT_URL", "http://127.0.0.1:8001/v1")
 STT_MODEL = os.getenv("WHISPER_MODEL") or "Systran/faster-whisper-large-v3"
 TTS_URL = os.getenv("SES_TTS_URL", "http://127.0.0.1:8002/v1")
+SUSMA_SURESI = float(os.getenv("SES_SUSMA_SURESI", "0.5"))  # misafir susunca kaç sn sonra cevap
 
 
 DIL_ADLARI = {"turkish": "tr", "english": "en", "german": "de", "russian": "ru"}
@@ -66,11 +71,13 @@ class OtomatikDilSTT(OpenAISTTService):
         kw = {"file": ("audio.wav", audio, "audio/wav"), "model": STT_MODEL, **ek}
         if dil:
             kw["language"] = dil
-            if dil == "tr":
-                kw["prompt"] = TR_IPUCU
+        if dil in (None, "tr"):
+            kw["prompt"] = TR_IPUCU
         return await self._client.audio.transcriptions.create(**kw)
 
     async def _transcribe(self, audio: bytes):
+        # Tek geçiş: dil algılama + yazıya çevirme. İpucu (otel kelimeleri) dil
+        # algılamayı etkilemez, yalnızca yazımı düzeltir.
         mevcut = self.kilit or VARSAYILAN_DIL
         r = await self._cevir(audio, None, response_format="verbose_json")
         ham = str(getattr(r, "language", "") or "").lower()
@@ -80,8 +87,7 @@ class OtomatikDilSTT(OpenAISTTService):
             if dil != self.kilit:
                 logger.info(f"Görüşme dili: {dil}")
                 self.kilit = dil
-            # Türkçede ipucuyla yeniden çöz (otel kelimeleri doğru yazılsın)
-            return await self._cevir(audio, "tr") if dil == "tr" else r
+            return r
         logger.info(f"Şüpheli dil ({ham}, {kelime} kelime); {mevcut} olarak yeniden çözülüyor")
         return await self._cevir(audio, mevcut)
 
@@ -174,7 +180,14 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     context = LLMContext()
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=SileroVADAnalyzer(),
+            # Misafir susunca 0,5 sn bekleyip cevaba geç (varsayılan "akıllı bitiş"
+            # algılayıcısı Türkçe cümleleri yarım sanıp saniyelerce bekleyebiliyor)
+            user_turn_strategies=UserTurnStrategies(
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=SUSMA_SURESI)]
+            ),
+        ),
     )
 
     pipeline = Pipeline(
