@@ -1,18 +1,24 @@
 #!/bin/sh
 # Ayarları ortam değişkenlerinden üretip Asterisk'i başlatır.
+#
+# Netgsm hattı (isteğe bağlı; gelen dış aramalar):
 #   SANTRAL_SIP_SUNUCU   Netgsm SIP sunucusu (ör. sip.netgsm.com.tr)
 #   SANTRAL_SIP_PORT     varsayılan 5060
-#   SANTRAL_SIP_KULLANICI, SANTRAL_SIP_SIFRE   dahilinin bilgileri
+#   SANTRAL_SIP_KULLANICI, SANTRAL_SIP_SIFRE   hattın/dahilinin bilgileri
 #   SANTRAL_SIP_ALAN     SIP alan adı (domain); boşsa sunucu adı
 #   SANTRAL_DIS_IP       statik IP gelince (isteğe bağlı)
+# Masa telefonu (isteğe bağlı; IP telefon doğrudan bu santrale kaydolur):
+#   MASA_SIFRE           "masa" hesabının şifresi; ahize kalkınca asistana bağlanır
 set -eu
-: "${SANTRAL_SIP_SUNUCU:?SANTRAL_SIP_SUNUCU tanımlı değil}"
-: "${SANTRAL_SIP_KULLANICI:?SANTRAL_SIP_KULLANICI tanımlı değil}"
-: "${SANTRAL_SIP_SIFRE:?SANTRAL_SIP_SIFRE tanımlı değil}"
-PORT=${SANTRAL_SIP_PORT:-5060}
-ALAN=${SANTRAL_SIP_ALAN:-$SANTRAL_SIP_SUNUCU}
 AUDIOSOCKET=${SES_AUDIOSOCKET:-127.0.0.1:9092}
 C=/etc/asterisk
+NETGSM=""
+[ -n "${SANTRAL_SIP_SUNUCU:-}" ] && [ -n "${SANTRAL_SIP_KULLANICI:-}" ] && [ -n "${SANTRAL_SIP_SIFRE:-}" ] && NETGSM=1
+if [ -z "$NETGSM" ] && [ -z "${MASA_SIFRE:-}" ]; then
+  echo "Ne Netgsm hattı ne masa telefonu tanımlı (SANTRAL_SIP_* ya da MASA_SIFRE)"; exit 1
+fi
+PORT=${SANTRAL_SIP_PORT:-5060}
+ALAN=${SANTRAL_SIP_ALAN:-${SANTRAL_SIP_SUNUCU:-}}
 
 DIS=""
 if [ -n "${SANTRAL_DIS_IP:-}" ]; then
@@ -20,7 +26,8 @@ if [ -n "${SANTRAL_DIS_IP:-}" ]; then
 external_signaling_address=$SANTRAL_DIS_IP
 local_net=192.168.0.0/16
 local_net=10.0.0.0/8
-local_net=172.16.0.0/12"
+local_net=172.16.0.0/12
+local_net=100.64.0.0/10"
 fi
 
 cat > $C/pjsip.conf <<CONF
@@ -33,6 +40,10 @@ type=transport
 protocol=udp
 bind=0.0.0.0:5060
 $DIS
+CONF
+
+if [ -n "$NETGSM" ]; then
+cat >> $C/pjsip.conf <<CONF
 
 [netgsm-auth]
 type=auth
@@ -80,6 +91,38 @@ type=identify
 endpoint=netgsm
 match=$SANTRAL_SIP_SUNUCU
 CONF
+fi
+
+if [ -n "${MASA_SIFRE:-}" ]; then
+cat >> $C/pjsip.conf <<CONF
+
+[masa]
+type=auth
+auth_type=userpass
+username=masa
+password=$MASA_SIFRE
+
+[masa]
+type=aor
+max_contacts=2
+remove_existing=yes
+qualify_frequency=30
+
+[masa]
+type=endpoint
+transport=udp
+context=masa
+disallow=all
+allow=alaw,ulaw
+auth=masa
+aors=masa
+direct_media=no
+rtp_symmetric=yes
+force_rport=yes
+rewrite_contact=yes
+dtmf_mode=rfc4733
+CONF
+fi
 
 cat > $C/extensions.conf <<CONF
 [general]
@@ -94,6 +137,11 @@ exten => asistan,1,NoOp(Gelen arama: \${CALLERID(num)})
  same => n,Wait(0.5)
  same => n,AudioSocket(40325ec2-5efd-4bd3-805f-53576e581d13,$AUDIOSOCKET)
  same => n,Hangup()
+
+[masa]
+; Masa telefonu: hangi numarayı çevirirse çevirsin (ya da ahize kalkınca) asistana
+exten => _.,1,Goto(gelen,asistan,1)
+exten => s,1,Goto(gelen,asistan,1)
 CONF
 
 cat > $C/rtp.conf <<CONF
@@ -137,5 +185,6 @@ noload => res_geolocation.so
 noload => res_pjsip_geolocation.so
 CONF
 
-echo "Santral başlıyor: $SANTRAL_SIP_KULLANICI@$ALAN → $SANTRAL_SIP_SUNUCU:$PORT"
+[ -n "$NETGSM" ] && echo "Netgsm hattı: $SANTRAL_SIP_KULLANICI@$ALAN → $SANTRAL_SIP_SUNUCU:$PORT"
+[ -n "${MASA_SIFRE:-}" ] && echo "Masa telefonu hesabı: masa"
 exec asterisk -f -vvv

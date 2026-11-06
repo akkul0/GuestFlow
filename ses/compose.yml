@@ -1,4 +1,4 @@
-# Telefon hattı (Netgsm) → santral → ses asistanı.
+# Telefon hattı (Netgsm) ve/veya masa telefonu → santral → ses asistanı.
 # Ana docker-compose.yml'ye .env'deki COMPOSE_FILE ile eklenir; yollar ana
 # dosyanın klasörüne (stayline-sunucu) göredir. Kurulum: GuestFlow/ses/telefon-kur.sh
 services:
@@ -16,6 +16,7 @@ services:
       SANTRAL_SIP_SIFRE: ${SANTRAL_SIP_SIFRE:-}
       SANTRAL_SIP_ALAN: ${SANTRAL_SIP_ALAN:-}
       SANTRAL_DIS_IP: ${SANTRAL_DIS_IP:-}
+      MASA_SIFRE: ${MASA_SIFRE:-}
     logging:
       driver: json-file
       options: { max-size: "20m", max-file: "5" }
