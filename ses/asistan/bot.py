@@ -175,8 +175,9 @@ async def dokumu_gonder(context: LLMContext, gorusme: str) -> None:
         logger.error(f"Döküm gönderilemedi: {e}")
 
 
-async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
-    gorusme = f"yerel-{uuid.uuid4()}"
+async def run_bot(transport: BaseTransport, runner_args: RunnerArguments | None = None, telefon: bool = False) -> None:
+    """telefon=False: tarayıcı testi (WebRTC). telefon=True: santralden gelen gerçek arama."""
+    gorusme = f"{'tel' if telefon else 'yerel'}-{uuid.uuid4()}"
     otel, bilgi = await otel_bilgisi()
     logger.info(f"Görüşme başladı: {gorusme} ({otel})")
 
@@ -185,6 +186,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         api_key="yerel",
         base_url=TTS_URL,
         settings=OpenAITTSService.Settings(voice="alloy", model="chatterbox"),
+        sample_rate=24000,  # ses servisi her zaman 24 kHz döndürür
     )
     ayarlar = OLLamaLLMService.Settings(model=LLM_MODEL, system_instruction=sistem_metni(otel, bilgi))
     if await dusunme_kapatilabilir_mi():
@@ -208,16 +210,24 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         [transport.input(), stt, user_aggregator, llm, tts, transport.output(), assistant_aggregator]
     )
     worker = PipelineWorker(pipeline, params=PipelineParams(enable_metrics=True), observers=[])
-    runner = WorkerRunner(handle_sigint=runner_args.handle_sigint)
+    runner = WorkerRunner(handle_sigint=runner_args.handle_sigint if runner_args else False)
     await runner.add_workers(worker)
 
-    @worker.rtvi.event_handler("on_client_ready")
-    async def on_client_ready(rtvi):
+    async def karsila():
         context.add_message({
             "role": "developer",
             "content": f"Misafiri Türkçe olarak kısaca karşıla: '{otel}, iyi günler, size nasıl yardımcı olabilirim?'",
         })
         await worker.queue_frames([LLMRunFrame()])
+
+    if telefon:
+        @transport.event_handler("on_client_connected")
+        async def on_client_connected(transport, client):
+            await karsila()
+    else:
+        @worker.rtvi.event_handler("on_client_ready")
+        async def on_client_ready(rtvi):
+            await karsila()
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
