@@ -52,7 +52,7 @@ DIL_ADLARI = {"turkish": "tr", "english": "en", "german": "de", "russian": "ru"}
 IZINLI_DILLER = {"tr", "en", "de", "ru"}
 VARSAYILAN_DIL = os.getenv("SES_VARSAYILAN_DIL", "tr")
 # Whisper'a ipucu: otelde sık geçen kelimeleri doğru yazsın ("spa" → "Sıpa" olmasın)
-TR_IPUCU = "Otel telefon görüşmesi. Spa, hamam, sauna, havuz, aquapark, kahvaltı, restoran, resepsiyon, havlu, oda servisi, klima, minibar."
+TR_IPUCU = "Otel telefon görüşmesi. Oda numaram 2122. Spa, hamam, sauna, havuz, aquapark, kahvaltı, restoran, resepsiyon, havlu, oda servisi, klima, minibar."
 
 
 class OtomatikDilSTT(OpenAISTTService):
@@ -126,8 +126,12 @@ KURALLAR
 - Cevapların sesli okunacak: en fazla iki kısa cümle. Liste, emoji, yıldız, parantez kullanma.
 - Misafir hangi dilde konuşuyorsa o dilde cevap ver (Türkçe, İngilizce, Almanca, Rusça...).
 - Saatleri ve sayıları yazıyla yaz (ör. "sabah yedi", "üç yüz beş"); rakam kullanma.
-- Misafir bir şey isterse (havlu, temizlik, arıza, oda servisi, uyandırma, şikâyet) oda numarasını
-  bilmiyorsan sor; sonra talebin ilgili ekibe iletildiğini ve kısa sürede ilgilenileceğini söyle.
+- Misafir bir şey isterse (havlu, temizlik, arıza, oda servisi, uyandırma, şikâyet):
+  1. Oda numarasını henüz bilmiyorsan YALNIZCA oda numarasını sor. Bu adımda talebin
+     iletildiğini SÖYLEME.
+  2. Oda numarasını duyunca tekrar ederek teyit et (ör. "Yirmi bir yirmi iki numaralı oda, doğru mu?").
+  3. Misafir onaylayınca talebin ilgili ekibe iletildiğini ve kısa sürede ilgilenileceğini söyle.
+  Oda numarası anlaşılmadıysa tahmin etme, tekrar söylemesini rica et.
   Talepleri sen kaydetmiyorsun; görüşme bitince sistem otomatik kaydeder.
 - Bilmediğin bir şeyi uydurma; "resepsiyon size yardımcı olacak" de.
 - Fiyat, indirim veya ücretsiz hizmet sözü verme.
