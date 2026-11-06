@@ -42,6 +42,8 @@ case "${1:-kur}" in
     $DC up -d --build santral telefon
     sleep 10
     TSIP=$(tailscale ip -4 2>/dev/null | head -1)
+    [ -n "$TSIP" ] || TSIP="(sunucunun Tailscale adresi: tailscale ip -4)"
+    MS=$(oku MASA_SIFRE)
     cat <<BILGI
 
 ────────────────────────────────────────────────────────────────
@@ -49,8 +51,8 @@ IP telefonun ayar sayfasında (Account → Register):
   Line Active     : Enabled
   Register Name   : masa
   User Name       : masa
-  Password        : $(oku MASA_SIFRE)
-  Server Host     : ${TSIP:-<sunucunun Tailscale IP'si>}     Port: 5060
+  Password        : $MS
+  Server Host     : $TSIP     Port: 5060
   Transport       : UDP
 Hotline (ahize kalkınca otomatik arama) numarası: 100
 ────────────────────────────────────────────────────────────────
