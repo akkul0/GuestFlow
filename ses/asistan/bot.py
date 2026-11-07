@@ -12,6 +12,7 @@ açılır ve ilgili personele WhatsApp bildirimi gider.
 (yalnızca bu bilgisayardan açılır). Oda telefonu bağlantısı sonra eklenecek.
 """
 import os
+import re
 import uuid
 
 import httpx
@@ -55,7 +56,24 @@ DIL_ADLARI = {"turkish": "tr", "english": "en", "german": "de", "russian": "ru"}
 IZINLI_DILLER = {d.strip() for d in os.getenv("SES_DILLER", "tr,en,de,ru").split(",") if d.strip()}
 VARSAYILAN_DIL = os.getenv("SES_VARSAYILAN_DIL", "tr")
 # Whisper'a ipucu: otelde sık geçen kelimeleri doğru yazsın ("spa" → "Sıpa" olmasın)
-TR_IPUCU = "Otel telefon görüşmesi. Oda numaram 2122. Spa, hamam, sauna, havuz, aquapark, kahvaltı, restoran, resepsiyon, havlu, oda servisi, klima, minibar."
+TR_IPUCU = (
+    "Otel telefon görüşmesi. Oda numaram 2122. Spa, hamam, sauna, havuz, aquapark, kahvaltı, restoran, "
+    "resepsiyon, havlu, oda servisi, klima, minibar. Coca-Cola, Cola Zero, Fanta, Sprite, Ayran, Red Bull, "
+    "soda, maden suyu, çay, Türk kahvesi, espresso, cappuccino, latte, bira, şarap, rakı, kokteyl."
+)
+EK_IPUCU = os.getenv("SES_IPUCU", "")  # otele özel ek kelimeler (virgülle)
+
+
+def ozel_isimler(bilgi: str, en_cok: int = 30) -> str:
+    """Bilgi bankasındaki özel adlar (restoran, bar, spa adları): Whisper doğru yazsın."""
+    adlar: list[str] = []
+    for m in re.finditer(r"\b([A-ZÇĞİÖŞÜ][\wçğıöşüÇĞİÖŞÜ'’-]+(?:\s+[A-ZÇĞİÖŞÜ][\wçğıöşüÇĞİÖŞÜ'’-]+)*)", bilgi):
+        ad = m.group(1)
+        if len(ad) > 3 and ad not in adlar:
+            adlar.append(ad)
+        if len(adlar) >= en_cok:
+            break
+    return ", ".join(adlar)
 
 
 class OtomatikDilSTT(OpenAISTTService):
@@ -69,13 +87,14 @@ class OtomatikDilSTT(OpenAISTTService):
     """
 
     kilit: str | None = None
+    ipucu: str = TR_IPUCU
 
     async def _cevir(self, audio: bytes, dil: str | None, **ek):
         kw = {"file": ("audio.wav", audio, "audio/wav"), "model": STT_MODEL, **ek}
         if dil:
             kw["language"] = dil
         if dil in (None, "tr"):
-            kw["prompt"] = TR_IPUCU
+            kw["prompt"] = self.ipucu
         return await self._client.audio.transcriptions.create(**kw)
 
     async def _transcribe(self, audio: bytes):
@@ -199,6 +218,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments | None 
     logger.info(f"Görüşme başladı: {gorusme} ({otel})")
 
     stt = OtomatikDilSTT(api_key="yerel", base_url=STT_URL, settings=OpenAISTTService.Settings(model=STT_MODEL))
+    # Whisper'ın istem sınırı ~220 belirteç: genel liste + otelin özel adları
+    stt.ipucu = " ".join(x for x in [TR_IPUCU, f"{otel}.", ozel_isimler(bilgi), EK_IPUCU] if x)[:900]
     tts = OpenAITTSService(
         api_key="yerel",
         base_url=TTS_URL,
