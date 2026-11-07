@@ -372,7 +372,10 @@ export class AiService {
       }
     } else if (directionRequest) {
       places = await this.getDirections(directionRequest, geo)
-    } else {
+    }
+    // Detay/yol tarifi sonuç vermediyse (ör. "en yakın eczane nerede", ya da
+    // Google kapalı) yakın yer aramasına düş
+    if (!places) {
       const placeSearch = detectPlaceSearch(lastText)
       if (placeSearch) {
         places = await this.getNearbyPlaces(placeSearch.type, placeSearch.label, geo)
