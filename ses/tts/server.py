@@ -20,7 +20,7 @@ import numpy as np
 import torch
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from lingua import Language, LanguageDetectorBuilder
 
 import torchaudio
@@ -177,12 +177,68 @@ def uret(metin: str, dil: str) -> np.ndarray:
     return wav
 
 
+def parcala(metin: str) -> list[str]:
+    """Uzun metni okunacak parçalara böler: ilk parça kısa (çabuk üretilsin,
+    misafir hemen duysun), sonrakiler daha uzun. Önce cümle sonu, sonra
+    virgül; ikisi de yoksa kelime sayısında bölünür. Çok kısa artık bırakılmaz."""
+    kelimeler = metin.split()
+    parcalar, simdiki = [], []
+    for i, k in enumerate(kelimeler):
+        simdiki.append(k)
+        sinir = 6 if not parcalar else 14
+        kalan = len(kelimeler) - i - 1
+        n = len(simdiki)
+        if kalan < 3:
+            continue  # sona 1-2 kelime kalmasın
+        if (re.search(r"[.!?…]$", k) and n >= 2) or (re.search(r"[,;:]$", k) and n >= sinir // 2) or n >= sinir:
+            parcalar.append(" ".join(simdiki))
+            simdiki = []
+    if simdiki:
+        parcalar.append(" ".join(simdiki))
+    return parcalar
+
+
+def pcm(wav: np.ndarray) -> bytes:
+    return (np.clip(wav, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+
+
+# Sık kullanılan kısa cevapların sesi hazırda bekler: "Tabii." anında çalar
+onbellek: dict[tuple[str, str], bytes] = {}
+HAZIR_CUMLELER = {
+    "tr": ["Tabii.", "Tabii ki.", "Elbette.", "Hemen bakıyorum.", "Hemen ilgileniyorum.", "Rica ederim.",
+           "Anladım.", "Bir saniye.", "Memnuniyetle.", "Teşekkürler.", "Teşekkür ederim.", "Peki.",
+           "Doğru mu?", "Oda numaranız nedir?", "Keyifli tatiller dilerim.", "Görüşmek üzere.",
+           "Keyifli bir konaklama dilerim.", "Başka bir isteğiniz var mı?"],
+    "en": ["Sure.", "Of course.", "Certainly.", "Let me check.", "You're welcome.", "Got it."],
+}
+KISA = 5  # bu kadar kelimeye kadar olan cümleler önbelleğe alınır
+
+
+def anahtar(metin: str, dil: str) -> tuple[str, str]:
+    return (" ".join(metin.split()).lower(), dil)
+
+
+def isit():
+    for dil, cumleler in HAZIR_CUMLELER.items():
+        for c in cumleler:
+            try:
+                onbellek[anahtar(c, dil)] = pcm(uret(soyle(c, dil), dil))
+            except Exception as e:  # noqa: BLE001
+                log.warning("Hazır cümle üretilemedi (%s): %s", c, e)
+    log.info("Hazır cümleler: %d adet", len(onbellek))
+
+
 app = FastAPI()
+
+
+@app.on_event("startup")
+async def baslangic():
+    threading.Thread(target=isit, daemon=True).start()
 
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "cihaz": cihaz, "sesler": sorted(sesler)}
+    return {"ok": True, "cihaz": cihaz, "sesler": sorted(sesler), "hazir": len(onbellek)}
 
 
 @app.post("/v1/audio/speech")
@@ -192,8 +248,28 @@ async def speech(req: Request):
     if not metin:
         return JSONResponse({"error": "input boş"}, status_code=400)
     dil = str(govde.get("language") or dil_bul(metin))
-    t = time.time()
-    wav = await run_in_threadpool(uret, soyle(metin, dil), dil)
-    pcm = (np.clip(wav, -1.0, 1.0) * 32767).astype("<i2").tobytes()
-    log.info("%s | %.2f sn ses, %.2f sn sürdü | %s", dil, len(wav) / model.sr, time.time() - t, metin[:60])
-    return Response(pcm, media_type="audio/pcm", headers={"X-Sample-Rate": str(model.sr)})
+    basliklar = {"X-Sample-Rate": str(model.sr)}
+
+    a = anahtar(metin, dil)
+    if a in onbellek:
+        log.info("%s | hazırdan | %s", dil, metin[:60])
+        return Response(onbellek[a], media_type="audio/pcm", headers=basliklar)
+
+    parcalar = parcala(metin)
+
+    async def akis():
+        t = time.time()
+        toplam = 0
+        for i, p in enumerate(parcalar):
+            wav = await run_in_threadpool(uret, soyle(p, dil), dil)
+            veri = pcm(wav)
+            toplam += len(wav)
+            if i == 0:
+                log.info("%s | ilk parça %.2f sn'de hazır | %s", dil, time.time() - t, p[:40])
+            yield veri
+        log.info("%s | %.2f sn ses, %.2f sn sürdü, %d parça | %s",
+                 dil, toplam / model.sr, time.time() - t, len(parcalar), metin[:60])
+        if len(parcalar) == 1 and len(metin.split()) <= KISA and len(onbellek) < 500:
+            onbellek[a] = veri
+
+    return StreamingResponse(akis(), media_type="audio/pcm", headers=basliklar)

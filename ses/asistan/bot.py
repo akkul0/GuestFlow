@@ -156,6 +156,8 @@ KURALLAR
 - Cevapların sesli okunacak: en fazla iki kısa cümle. Liste, emoji, yıldız, parantez kullanma.
 - Cevaba HER ZAMAN 1-3 kelimelik çok kısa bir cümleyle başla ("Tabii." "Hemen bakıyorum." "Elbette."),
   ayrıntıyı ikinci cümlede ver. Böylece misafir beklemeden sesini duyar.
+- İkinci cümle de kısa olsun: en fazla on kelime, gereksiz ayrıntı verme
+  (ör. "Kahvaltı yediden ona kadar, Lavanta restoranında.").
 {dil_kurali()}
 - Saatleri ve sayıları yazıyla yaz (ör. "sabah yedi", "üç yüz beş"); rakam kullanma.
 - Misafir bir şey isterse (havlu, temizlik, arıza, oda servisi, uyandırma, şikâyet):
