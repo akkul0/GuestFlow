@@ -133,16 +133,59 @@ export class AiService {
     }
   }
 
+  /** Ücretsiz, anahtarsız yedek: OpenStreetMap (Overpass) ile en yakın 3 yer. */
+  private async getNearbyPlacesOsm(type: string, label: string, geo: HotelGeo): Promise<string> {
+    const etiket: Record<string, string> = {
+      pharmacy: 'nwr[amenity=pharmacy]',
+      supermarket: 'nwr[shop~"^(supermarket|convenience)$"]',
+      restaurant: 'nwr[amenity=restaurant]',
+      atm: 'nwr[amenity~"^(atm|bank)$"]',
+      hospital: 'nwr[amenity~"^(hospital|clinic)$"]',
+      cafe: 'nwr[amenity=cafe]',
+    }
+    const secici = etiket[type]
+    if (!secici) return ''
+    try {
+      const sorgu = `[out:json][timeout:8];${secici}(around:6000,${geo.lat},${geo.lon});out center 60;`
+      const res = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'StayLine/1.0' },
+        body: 'data=' + encodeURIComponent(sorgu),
+        signal: AbortSignal.timeout(9000),
+      })
+      const data = await res.json() as any
+      const yerler = (data.elements ?? [])
+        .map((e: any) => ({ ad: e.tags?.name, lat: e.lat ?? e.center?.lat, lon: e.lon ?? e.center?.lon }))
+        .filter((y: any) => y.ad && y.lat != null && y.lon != null)
+        .map((y: any) => ({ ...y, km: this.calcDistance(geo.lat, geo.lon, y.lat, y.lon) }))
+        .sort((a: any, b: any) => a.km - b.km)
+        .slice(0, 3)
+      if (yerler.length === 0) return ''
+      const satirlar = yerler
+        .map((y: any) => `📍 ${y.ad} - ${Math.round(y.km * 10) / 10} km - https://www.google.com/maps/search/?api=1&query=${y.lat},${y.lon}`)
+        .join('\n')
+      return `\n\nYakındaki ${label} seçenekleri (açık/kapalı bilgisi yok):\n${satirlar}`
+    } catch (e) {
+      this.app.log.warn({ err: e }, 'OpenStreetMap yakın yer araması başarısız')
+      return ''
+    }
+  }
+
   private async getNearbyPlaces(type: string, label: string, geo: HotelGeo | null): Promise<string> {
     try {
       if (!geo) return ''
       const apiKey = process.env.GOOGLE_PLACES_API_KEY
-      if (!apiKey) return ''
+      if (!apiKey) return this.getNearbyPlacesOsm(type, label, geo)
 
       const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${geo.lat},${geo.lon}&rankby=distance&type=${type}&key=${apiKey}&language=tr`
-      const res = await fetch(url)
+      const res = await fetch(url, { signal: AbortSignal.timeout(6000) })
       const data = await res.json() as any
 
+      // Google kapalıysa (faturalandırma, kota vb.) ücretsiz OpenStreetMap'e düş
+      if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
+        this.app.log.warn({ status: data.status }, 'Google Places kullanılamadı; OpenStreetMap deneniyor')
+        return this.getNearbyPlacesOsm(type, label, geo)
+      }
       if (!data.results || data.results.length === 0) return ''
 
       const places = data.results.slice(0, 3).map((p: any) => {
