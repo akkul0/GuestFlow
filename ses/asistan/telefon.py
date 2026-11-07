@@ -16,6 +16,7 @@ import asyncio
 import os
 import struct
 
+import httpx
 import uvicorn
 import websockets
 from fastapi import FastAPI, WebSocket
@@ -39,6 +40,27 @@ TEL_SR = 8000
 KARE = 320  # 20 ms, 8 kHz, 16 bit
 
 TUR_KAPAT, TUR_UUID, TUR_DTMF, TUR_SES, TUR_HATA = 0x00, 0x01, 0x03, 0x10, 0xFF
+
+KARSILAMA_SES = b""  # 8 kHz PCM; açılışta bir kez üretilir
+
+
+async def karsilama_hazirla():
+    """Karşılama cümlesini bir kez sese çevirip saklar: arayan beklemeden duyar."""
+    global KARSILAMA_SES
+    otel, _ = await bot.otel_bilgisi()
+    metin = bot.karsilama_metni(otel)
+    for deneme in range(30):  # ses servisi açılışta model yüklüyor olabilir
+        try:
+            async with httpx.AsyncClient(timeout=120) as c:
+                r = await c.post(f"{bot.TTS_URL}/audio/speech",
+                                 json={"model": "chatterbox", "voice": "alloy", "input": metin, "language": "tr"})
+                r.raise_for_status()
+            KARSILAMA_SES = await create_stream_resampler().resample(r.content, 24000, TEL_SR)
+            logger.info(f"Karşılama sesi hazır ({len(KARSILAMA_SES) / (TEL_SR * 2):.1f} sn): {metin}")
+            return
+        except Exception as e:
+            logger.warning(f"Karşılama sesi üretilemedi ({deneme + 1}/30): {e}")
+            await asyncio.sleep(10)
 
 
 class HamPCM(FrameSerializer):
@@ -94,7 +116,7 @@ def paket(tur: int, veri: bytes = b"") -> bytes:
 async def arama(okuyucu: asyncio.StreamReader, yazici: asyncio.StreamWriter):
     """Asterisk'ten gelen tek bir arama."""
     logger.info("Telefon: yeni arama")
-    tampon = bytearray()
+    tampon = bytearray(KARSILAMA_SES)  # karşılama hemen çalmaya başlar
     bitti = asyncio.Event()
     try:
         ws_baglanti = await websockets.connect(f"ws://127.0.0.1:{WS_PORT}/ws", max_size=None)
@@ -176,6 +198,7 @@ async def main():
     sunucu = await asyncio.start_server(arama, "127.0.0.1", AUDIOSOCKET_PORT)
     logger.info(f"Telefon köprüsü hazır: AudioSocket 127.0.0.1:{AUDIOSOCKET_PORT}")
     config = uvicorn.Config(app, host="127.0.0.1", port=WS_PORT, log_level="warning")
+    asyncio.create_task(karsilama_hazirla())
     await asyncio.gather(sunucu.serve_forever(), uvicorn.Server(config).serve())
 
 

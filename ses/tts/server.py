@@ -11,6 +11,7 @@ istekte "language" alanı varsa o kullanılır.
 (o dilde konuşan 10-20 sn temiz kayıt). Yoksa modelin varsayılan sesi.
 """
 import logging
+import re
 import os
 import threading
 import time
@@ -99,6 +100,26 @@ def temizle(wav: np.ndarray, sr: int) -> np.ndarray:
 kilit = threading.Lock()  # tek ekran kartı: istekler sırayla
 
 
+# Türkçe okurken yabancı kelimeler yazıldığı gibi okunmasın
+SOYLENIS = {
+    "tr": [
+        (re.compile(r"StayLine", re.I), "Steylayn"),
+        (re.compile(r"\bWi-?Fi\b", re.I), "vay fay"),
+        (re.compile(r"WhatsApp", re.I), "Vatsap"),
+        (re.compile(r"\bà la carte\b|\ba la carte\b", re.I), "alakart"),
+        (re.compile(r"\bcheck-?in\b", re.I), "çekin"),
+        (re.compile(r"\bcheck-?out\b", re.I), "çekaut"),
+        (re.compile(r"\bLobby\b", re.I), "Lobi"),
+    ],
+}
+
+
+def soyle(metin: str, dil: str) -> str:
+    for desen, yerine in SOYLENIS.get(dil, []):
+        metin = desen.sub(yerine, metin)
+    return metin
+
+
 def dil_bul(metin: str) -> str:
     d = algilayici.detect_language_of(metin)
     return DILLER.get(d, VARSAYILAN_DIL)
@@ -172,7 +193,7 @@ async def speech(req: Request):
         return JSONResponse({"error": "input boş"}, status_code=400)
     dil = str(govde.get("language") or dil_bul(metin))
     t = time.time()
-    wav = await run_in_threadpool(uret, metin, dil)
+    wav = await run_in_threadpool(uret, soyle(metin, dil), dil)
     pcm = (np.clip(wav, -1.0, 1.0) * 32767).astype("<i2").tobytes()
     log.info("%s | %.2f sn ses, %.2f sn sürdü | %s", dil, len(wav) / model.sr, time.time() - t, metin[:60])
     return Response(pcm, media_type="audio/pcm", headers={"X-Sample-Rate": str(model.sr)})

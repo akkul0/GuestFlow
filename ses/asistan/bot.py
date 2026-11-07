@@ -124,6 +124,8 @@ def sistem_metni(otel: str, bilgi: str) -> str:
 
 KURALLAR
 - Cevapların sesli okunacak: en fazla iki kısa cümle. Liste, emoji, yıldız, parantez kullanma.
+- Cevaba HER ZAMAN 1-3 kelimelik çok kısa bir cümleyle başla ("Tabii." "Hemen bakıyorum." "Elbette."),
+  ayrıntıyı ikinci cümlede ver. Böylece misafir beklemeden sesini duyar.
 - Misafir hangi dilde konuşuyorsa o dilde cevap ver (Türkçe, İngilizce, Almanca, Rusça...).
 - Saatleri ve sayıları yazıyla yaz (ör. "sabah yedi", "üç yüz beş"); rakam kullanma.
 - Misafir bir şey isterse (havlu, temizlik, arıza, oda servisi, uyandırma, şikâyet):
@@ -148,6 +150,10 @@ Sen: Teşekkürler, teknik ekibimize ilettim; kısa sürede odanıza gelecekler.
 
 OTEL BİLGİLERİ
 {bilgi or '(bilgi bankası boş)'}"""
+
+
+def karsilama_metni(otel: str) -> str:
+    return f"{otel}, iyi günler, size nasıl yardımcı olabilirim?"
 
 
 async def dokumu_gonder(context: LLMContext, gorusme: str) -> None:
@@ -213,6 +219,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments | None 
     runner = WorkerRunner(handle_sigint=runner_args.handle_sigint if runner_args else False)
     await runner.add_workers(worker)
 
+    async def karsila_hazir():
+        # Telefonda karşılama sesi köprüden hazır çalınır (bekletmemek için);
+        # modelin bağlamına yalnızca söylendiği yazılır.
+        context.add_message({"role": "assistant", "content": karsilama_metni(otel)})
+
     async def karsila():
         context.add_message({
             "role": "developer",
@@ -223,7 +234,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments | None 
     if telefon:
         @transport.event_handler("on_client_connected")
         async def on_client_connected(transport, client):
-            await karsila()
+            await karsila_hazir()
     else:
         @worker.rtvi.event_handler("on_client_ready")
         async def on_client_ready(rtvi):
