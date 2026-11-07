@@ -22,7 +22,7 @@ export type FactCategory = (typeof FACT_CATEGORIES)[number]['key']
 export const isFactCategory = (v: unknown): v is FactCategory => FACT_CATEGORIES.some((c) => c.key === v)
 
 // AI'a giden metnin üst sınırı (≈ 2.500 token). Aşılırsa kesilir ve belirtilir.
-export const MAX_KNOWLEDGE_CHARS = 9000
+export const MAX_KNOWLEDGE_CHARS = 14000
 const CACHE_SECONDS = 300
 const cacheKey = (hotelId: string) => `kb:${hotelId}`
 

@@ -6,9 +6,10 @@
   \quit
 \endif
 BEGIN;
-DELETE FROM hotel_facts WHERE category = 'NEARBY' AND "hotelId" IN (SELECT id FROM hotels WHERE slug = :'otel');
+DELETE FROM hotel_facts WHERE category = 'SERVICES' AND "sortOrder" >= 100 AND "hotelId" IN (SELECT id FROM hotels WHERE slug = :'otel');
+DELETE FROM hotel_facts WHERE category = 'NEARBY';
 INSERT INTO hotel_facts (id, "hotelId", category, title, content, "sortOrder", "isActive", "createdAt", "updatedAt")
-SELECT gen_random_uuid()::text, h.id, 'NEARBY', f.title, f.content, f.sort, true, now(), now()
+SELECT gen_random_uuid()::text, h.id, 'SERVICES', f.title, f.content, f.sort, true, now(), now()
 FROM hotels h, (VALUES
   ($q$Yakındaki eczaneler$q$, $q$En yakın eczaneler Kadriye merkezinde, otelden yaklaşık 2 km (taksiyle 5 dakika). Haritada yakındaki eczaneler: https://www.google.com/maps/search/eczane/@36.8706,31.0149,15z . Gece açık nöbetçi eczaneyi resepsiyon (dahili 9) söyler ve taksi çağırır. Otel revirinde ilk yardım malzemesi bulunur.$q$, 100),
   ($q$Yakındaki marketler$q$, $q$En yakın marketler Kadriye merkezinde, otelden yaklaşık 2 km. Haritada: https://www.google.com/maps/search/market/@36.8706,31.0149,15z . Otel içindeki mini market lobi katındadır, 09:00-23:00 açıktır.$q$, 101),
