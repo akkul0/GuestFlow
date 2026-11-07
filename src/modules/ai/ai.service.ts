@@ -36,6 +36,15 @@ function geoOf(hotel: { latitude?: number | null; longitude?: number | null; add
   }
 }
 
+// Ücretsiz OpenStreetMap (Overpass) sunucuları; sonuçlar 12 saat saklanır
+const OVERPASS_SUNUCULARI = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+]
+const osmOnbellek = new Map<string, { metin: string; zaman: number }>()
+
 const PLACE_KEYWORDS: { keywords: string[]; type: string; label: string }[] = [
   { keywords: ['eczane', 'pharmacy', 'apteka', 'apotheke'], type: 'pharmacy', label: 'Eczane' },
   { keywords: ['market', 'süpermarket', 'supermarket', 'супермаркет', 'магазин'], type: 'supermarket', label: 'Market' },
@@ -145,15 +154,22 @@ export class AiService {
     }
     const secici = etiket[type]
     if (!secici) return ''
+    const onbellekAnahtari = `${type}:${geo.lat},${geo.lon}`
+    const onceki = osmOnbellek.get(onbellekAnahtari)
+    if (onceki && Date.now() - onceki.zaman < 12 * 3600_000) return onceki.metin
     try {
-      const sorgu = `[out:json][timeout:8];${secici}(around:6000,${geo.lat},${geo.lon});out center 60;`
-      const res = await fetch('https://overpass-api.de/api/interpreter', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'StayLine/1.0' },
-        body: 'data=' + encodeURIComponent(sorgu),
-        signal: AbortSignal.timeout(9000),
-      })
-      const data = await res.json() as any
+      const sorgu = `[out:json][timeout:10];${secici}(around:5000,${geo.lat},${geo.lon});out center 60;`
+      // Birden çok ücretsiz sunucuya aynı anda sor, ilk cevap vereni al
+      const data = await Promise.any(OVERPASS_SUNUCULARI.map(async (adres) => {
+        const res = await fetch(adres, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'StayLine/1.0' },
+          body: 'data=' + encodeURIComponent(sorgu),
+          signal: AbortSignal.timeout(12000),
+        })
+        if (!res.ok) throw new Error(`${adres} ${res.status}`)
+        return await res.json() as any
+      }))
       const yerler = (data.elements ?? [])
         .map((e: any) => ({ ad: e.tags?.name, lat: e.lat ?? e.center?.lat, lon: e.lon ?? e.center?.lon }))
         .filter((y: any) => y.ad && y.lat != null && y.lon != null)
@@ -164,7 +180,9 @@ export class AiService {
       const satirlar = yerler
         .map((y: any) => `📍 ${y.ad} - ${Math.round(y.km * 10) / 10} km - https://www.google.com/maps/search/?api=1&query=${y.lat},${y.lon}`)
         .join('\n')
-      return `\n\nYakındaki ${label} seçenekleri (açık/kapalı bilgisi yok):\n${satirlar}`
+      const metin = `\n\nYakındaki ${label} seçenekleri (açık/kapalı bilgisi yok):\n${satirlar}`
+      osmOnbellek.set(onbellekAnahtari, { metin, zaman: Date.now() })
+      return metin
     } catch (e) {
       this.app.log.warn({ err: e }, 'OpenStreetMap yakın yer araması başarısız')
       return ''
