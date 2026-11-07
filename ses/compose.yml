@@ -33,6 +33,8 @@ services:
       SES_AJAN_KIMLIGI: ${SES_AJAN_KIMLIGI:-yerel-ses}
       LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-}
       WHISPER_MODEL: ${WHISPER_MODEL:-}
+      SES_DILLER: ${SES_DILLER:-tr,en,de,ru}
+      SES_VAD_GUVEN: ${SES_VAD_GUVEN:-0.8}
     logging:
       driver: json-file
       options: { max-size: "20m", max-file: "5" }

@@ -17,6 +17,7 @@ import uuid
 import httpx
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -49,7 +50,9 @@ SUSMA_SURESI = float(os.getenv("SES_SUSMA_SURESI", "0.5"))  # misafir susunca ka
 
 
 DIL_ADLARI = {"turkish": "tr", "english": "en", "german": "de", "russian": "ru"}
-IZINLI_DILLER = {"tr", "en", "de", "ru"}
+# Telefonda konuşulacak diller (virgülle). Tek dil verilirse dil algılanmaz,
+# her şey o dilde çözülür ve konuşulur (gürültülü ortamda en sağlamı).
+IZINLI_DILLER = {d.strip() for d in os.getenv("SES_DILLER", "tr,en,de,ru").split(",") if d.strip()}
 VARSAYILAN_DIL = os.getenv("SES_VARSAYILAN_DIL", "tr")
 # Whisper'a ipucu: otelde sık geçen kelimeleri doğru yazsın ("spa" → "Sıpa" olmasın)
 TR_IPUCU = "Otel telefon görüşmesi. Oda numaram 2122. Spa, hamam, sauna, havuz, aquapark, kahvaltı, restoran, resepsiyon, havlu, oda servisi, klima, minibar."
@@ -76,6 +79,8 @@ class OtomatikDilSTT(OpenAISTTService):
         return await self._client.audio.transcriptions.create(**kw)
 
     async def _transcribe(self, audio: bytes):
+        if len(IZINLI_DILLER) == 1:
+            return await self._cevir(audio, next(iter(IZINLI_DILLER)))
         # Tek geçiş: dil algılama + yazıya çevirme. İpucu (otel kelimeleri) dil
         # algılamayı etkilemez, yalnızca yazımı düzeltir.
         mevcut = self.kilit or VARSAYILAN_DIL
@@ -119,6 +124,12 @@ async def dusunme_kapatilabilir_mi() -> bool:
         return False
 
 
+def dil_kurali() -> str:
+    if IZINLI_DILLER == {"tr"}:
+        return "- HER ZAMAN Türkçe konuş. Misafir başka dilde konuşsa da Türkçe cevap ver."
+    return "- Misafir hangi dilde konuşuyorsa o dilde cevap ver (Türkçe, İngilizce, Almanca, Rusça...)."
+
+
 def sistem_metni(otel: str, bilgi: str) -> str:
     return f"""Sen {otel} otelinin telefon asistanısın. Misafirler oda telefonundan arıyor.
 
@@ -126,7 +137,7 @@ KURALLAR
 - Cevapların sesli okunacak: en fazla iki kısa cümle. Liste, emoji, yıldız, parantez kullanma.
 - Cevaba HER ZAMAN 1-3 kelimelik çok kısa bir cümleyle başla ("Tabii." "Hemen bakıyorum." "Elbette."),
   ayrıntıyı ikinci cümlede ver. Böylece misafir beklemeden sesini duyar.
-- Misafir hangi dilde konuşuyorsa o dilde cevap ver (Türkçe, İngilizce, Almanca, Rusça...).
+{dil_kurali()}
 - Saatleri ve sayıları yazıyla yaz (ör. "sabah yedi", "üç yüz beş"); rakam kullanma.
 - Misafir bir şey isterse (havlu, temizlik, arıza, oda servisi, uyandırma, şikâyet):
   1. Oda numarasını henüz bilmiyorsan YALNIZCA oda numarasını sor. Bu adımda talebin
@@ -203,7 +214,12 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments | None 
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            vad_analyzer=SileroVADAnalyzer(),
+            # Gürültülü ortam (fuar, lobi): daha emin olmadan konuşma sayma
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(
+                confidence=float(os.getenv("SES_VAD_GUVEN", "0.8")),
+                start_secs=float(os.getenv("SES_VAD_BASLA", "0.3")),
+                min_volume=float(os.getenv("SES_VAD_SES", "0.65")),
+            )),
             # Misafir susunca 0,5 sn bekleyip cevaba geç (varsayılan "akıllı bitiş"
             # algılayıcısı Türkçe cümleleri yarım sanıp saniyelerce bekleyebiliyor)
             user_turn_strategies=UserTurnStrategies(
